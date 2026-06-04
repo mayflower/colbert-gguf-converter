@@ -264,3 +264,49 @@ def test_llama_cpp_export(fake_colbert_model_dir):
     pg_emb = next(t for t in pg_reader.tensors if t.name == "hf.embeddings.tok_embeddings.weight")
     cpp_emb = next(t for t in reader.tensors if t.name == "token_embd.weight")
     np.testing.assert_allclose(cpp_emb.data, pg_emb.data)
+
+
+def test_publisher_with_validation(fake_colbert_model_dir, monkeypatch):
+    """Test the complete download -> convert -> validate -> upload publisher workflow with mocked HF Hub uploads."""
+    mock_calls = []
+    
+    class MockHfApi:
+        def __init__(self, token=None):
+            mock_calls.append("init")
+            
+        def whoami(self):
+            return {"name": "mock-user"}
+            
+        def create_repo(self, repo_id, repo_type, private=False, exist_ok=True):
+            mock_calls.append(("create_repo", repo_id))
+            
+        def upload_file(self, path_or_fileobj, path_in_repo, repo_id, repo_type):
+            mock_calls.append(("upload_file", path_in_repo, repo_id))
+            
+    # Mock Hugging Face API HfApi
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "HfApi", MockHfApi)
+    
+    # Run publish main
+    import sys
+    old_argv = sys.argv
+    sys.argv = [
+        "publish_colbert_gguf.py",
+        "--model-id", str(fake_colbert_model_dir),
+        "--target-repo-id", "mock-user/test-model-gguf",
+        "--outtype", "f32"
+    ]
+    
+    from tools.publish_colbert_gguf import main as publish_main
+    try:
+        publish_main()
+    finally:
+        sys.argv = old_argv
+        
+    # Verify sequence of conversion, validation, repository creation, and file uploads
+    expected_gguf_name = f"{str(fake_colbert_model_dir).replace('/', '_').replace('-', '_')}.f32.gguf"
+    assert "init" in mock_calls
+    assert ("create_repo", "mock-user/test-model-gguf") in mock_calls
+    assert ("upload_file", expected_gguf_name, "mock-user/test-model-gguf") in mock_calls
+    assert ("upload_file", "README.md", "mock-user/test-model-gguf") in mock_calls
+

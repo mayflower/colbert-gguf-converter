@@ -35,6 +35,10 @@ def parse_args() -> argparse.Namespace:
                         help="HuggingFace API write token (or set HF_TOKEN environment variable)")
     parser.add_argument("--private", action="store_true", help="Create the target repository as private")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose conversion logs")
+    parser.add_argument("--tolerance", type=float, default=1e-4,
+                        help="Numerical tolerance for model output verification (default: 1e-4)")
+    parser.add_argument("--no-validation", action="store_true",
+                        help="Skip numerical validation check before uploading")
     return parser.parse_args()
 
 
@@ -130,12 +134,20 @@ def main() -> None:
         # Override sys.argv to trigger conversion logic
         import sys
         old_argv = sys.argv
+        
+        # Check if the model ID is a local directory (common in tests/local runs)
+        model_is_dir = Path(args.model_id).exists() and Path(args.model_id).is_dir()
+        
         sys.argv = [
             "convert_colbert_hf_to_gguf.py",
-            "--model-id", args.model_id,
             "--outfile", str(local_gguf_path),
             "--outtype", args.outtype,
         ]
+        if model_is_dir:
+            sys.argv.extend(["--model-dir", args.model_id])
+        else:
+            sys.argv.extend(["--model-id", args.model_id])
+            
         if args.verbose:
             sys.argv.append("--verbose")
             
@@ -146,6 +158,31 @@ def main() -> None:
             sys.exit(1)
         finally:
             sys.argv = old_argv
+
+        # 1.b. Test and Validate the model outputs
+        if not args.no_validation:
+            print(f"\nStep 1.b: Testing and validating GGUF model numerical inference...")
+            import validate_colbert_gguf_inference
+            
+            old_argv = sys.argv
+            sys.argv = [
+                "validate_colbert_gguf_inference.py",
+                str(local_gguf_path),
+                "--hf-model", args.model_id,
+                "--tolerance", str(args.tolerance)
+            ]
+            try:
+                validate_colbert_gguf_inference.main()
+                print("Validation: SUCCESS (GGUF model output matches reference model outputs!)")
+            except SystemExit as se:
+                if se.code != 0:
+                    print("Error: GGUF model validation failed! Aborting publication.", file=sys.stderr)
+                    sys.exit(se.code)
+            except Exception as e:
+                print(f"Error during GGUF model validation: {e}", file=sys.stderr)
+                sys.exit(1)
+            finally:
+                sys.argv = old_argv
 
         # 2. Write model card (README.md)
         readme_path = tmp_path / "README.md"
