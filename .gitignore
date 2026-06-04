@@ -1,0 +1,15 @@
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing caches & logs
+.pytest_cache/
+*.log
+
+# Models & weight files
+*.gguf
+*.npz
+tests/fixtures/pylate_golden.npz
+tests/fixtures/pylate_golden.json
