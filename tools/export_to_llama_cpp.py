@@ -66,8 +66,12 @@ def get_llama_tensor_map(arch: str) -> Dict[str, str]:
             "attn.Wqkv.bias": "attn_qkv.bias",
             "attn.out_proj.weight": "attn_out.weight",
             "attn.out_proj.bias": "attn_out.bias",
+            "attn.Wo.weight": "attn_out.weight",
+            "attn.Wo.bias": "attn_out.bias",
             "attn.norm.weight": "attn_norm.weight",
             "attn.norm.bias": "attn_norm.bias",
+            "attn_norm.weight": "attn_norm.weight",
+            "attn_norm.bias": "attn_norm.bias",
             
             "mlp.wi_0.weight": "ffn_gate.weight",  # wi_0 is gate projection
             "mlp.wi_0.bias": "ffn_gate.bias",
@@ -75,11 +79,17 @@ def get_llama_tensor_map(arch: str) -> Dict[str, str]:
             "mlp.wi_1.bias": "ffn_up.bias",
             "mlp.wo.weight": "ffn_down.weight",    # wo is down projection
             "mlp.wo.bias": "ffn_down.bias",
+            "mlp.Wo.weight": "ffn_down.weight",    # Wo is down projection
+            "mlp.Wo.bias": "ffn_down.bias",
             "mlp.norm.weight": "ffn_norm.weight",
             "mlp.norm.bias": "ffn_norm.bias",
+            "mlp_norm.weight": "ffn_norm.weight",
+            "mlp_norm.bias": "ffn_norm.bias",
             
             "norm.weight": "output_norm.weight",   # Final output norm
-            "norm.bias": "output_norm.bias"
+            "norm.bias": "output_norm.bias",
+            "final_norm.weight": "output_norm.weight",
+            "final_norm.bias": "output_norm.bias",
         }
     elif arch == "bert":
         return {
@@ -196,6 +206,25 @@ def main() -> None:
             if layer_match:
                 layer_idx = int(layer_match.group(1))
                 suffix = layer_match.group(2)
+                
+                # Handle concatenated Wi gate/up projections
+                if suffix == "mlp.Wi.weight":
+                    mid = t.data.shape[-1] // 2
+                    gate_data = t.data[..., :mid]
+                    up_data = t.data[..., mid:]
+                    writer.add_tensor(f"blk.{layer_idx}.ffn_gate.weight", gate_data)
+                    writer.add_tensor(f"blk.{layer_idx}.ffn_up.weight", up_data)
+                    mapped_count += 2
+                    continue
+                elif suffix == "mlp.Wi.bias":
+                    mid = t.data.shape[0] // 2
+                    gate_data = t.data[:mid]
+                    up_data = t.data[mid:]
+                    writer.add_tensor(f"blk.{layer_idx}.ffn_gate.bias", gate_data)
+                    writer.add_tensor(f"blk.{layer_idx}.ffn_up.bias", up_data)
+                    mapped_count += 2
+                    continue
+                
                 if suffix in t_map:
                     llama_name = f"blk.{layer_idx}.{t_map[suffix]}"
             else:
