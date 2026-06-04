@@ -1,0 +1,44 @@
+{
+  "model_name": "VAGOsolutions/SauerkrautLM-Multi-ModernColBERT",
+  "device": "cuda",
+  "queries": [
+    {
+      "index": 0,
+      "text": "Which planet is known as the Red Planet?",
+      "tensor_key": "query_0",
+      "shape": [
+        32,
+        128
+      ]
+    },
+    {
+      "index": 1,
+      "text": "Welcher Planet ist als der Rote Planet bekannt?",
+      "tensor_key": "query_1",
+      "shape": [
+        32,
+        128
+      ]
+    }
+  ],
+  "documents": [
+    {
+      "index": 0,
+      "text": "Mars is the Red Planet.",
+      "tensor_key": "doc_0",
+      "shape": [
+        9,
+        128
+      ]
+    },
+    {
+      "index": 1,
+      "text": "Mars ist als der Rote Planet bekannt.",
+      "tensor_key": "doc_1",
+      "shape": [
+        14,
+        128
+      ]
+    }
+  ]
+}
