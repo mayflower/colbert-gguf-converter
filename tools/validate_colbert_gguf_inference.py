@@ -91,11 +91,19 @@ def rebuild_tokenizer(reader: GGUFReader) -> Tuple[AutoTokenizer, Dict[str, Any]
     tokenizer = AutoTokenizer.from_pretrained(str(tmp_path), local_files_only=True)
     
     # Extract prefix configurations
+    attend_val = reader.fields.get("colbert.attend_to_expansion_tokens")
+    attend_to_expansion = decode_gguf_field(attend_val) if attend_val is not None else True
+    
+    skiplist_field = reader.fields.get("colbert.skiplist_words")
+    skiplist_words = decode_gguf_field(skiplist_field) if skiplist_field is not None else []
+    
     tokenizer_info = {
         "query_prefix": decode_gguf_field(reader.fields.get("colbert.query_prefix")) or "[Q] ",
         "document_prefix": decode_gguf_field(reader.fields.get("colbert.document_prefix")) or "[D] ",
         "query_length": int(decode_gguf_field(reader.fields.get("colbert.query_length")) or 32),
         "document_length": int(decode_gguf_field(reader.fields.get("colbert.document_length")) or 300),
+        "attend_to_expansion_tokens": bool(attend_to_expansion),
+        "skiplist_words": skiplist_words,
     }
     
     # Keep reference to tmp_dir so it doesn't get cleaned up too early
@@ -203,6 +211,10 @@ def rebuild_pytorch_model(reader: GGUFReader, arch: str) -> Tuple[torch.nn.Modul
         for i in range(num_layers):
             copy_if_present(f"layers.{i}.attn.Wqkv.weight", f"layers.{i}.attn.Wqkv.weight")
             copy_if_present(f"layers.{i}.attn.Wqkv.bias", f"layers.{i}.attn.Wqkv.bias")
+            
+            # attn.Wo (official HF name) or attn.out_proj
+            copy_if_present(f"layers.{i}.attn.Wo.weight", f"layers.{i}.attn.Wo.weight")
+            copy_if_present(f"layers.{i}.attn.Wo.bias", f"layers.{i}.attn.Wo.bias")
             copy_if_present(f"layers.{i}.attn.out_proj.weight", f"layers.{i}.attn.Wo.weight")
             copy_if_present(f"layers.{i}.attn.out_proj.bias", f"layers.{i}.attn.Wo.bias")
             
@@ -210,27 +222,41 @@ def rebuild_pytorch_model(reader: GGUFReader, arch: str) -> Tuple[torch.nn.Modul
             if i > 0:
                 copy_if_present(f"layers.{i}.attn.norm.weight", f"layers.{i}.attn_norm.weight")
                 copy_if_present(f"layers.{i}.attn.norm.bias", f"layers.{i}.attn_norm.bias")
+                copy_if_present(f"layers.{i}.attn_norm.weight", f"layers.{i}.attn_norm.weight")
+                copy_if_present(f"layers.{i}.attn_norm.bias", f"layers.{i}.attn_norm.bias")
                 
             copy_if_present(f"layers.{i}.mlp.norm.weight", f"layers.{i}.mlp_norm.weight")
             copy_if_present(f"layers.{i}.mlp.norm.bias", f"layers.{i}.mlp_norm.bias")
+            copy_if_present(f"layers.{i}.mlp_norm.weight", f"layers.{i}.mlp_norm.weight")
+            copy_if_present(f"layers.{i}.mlp_norm.bias", f"layers.{i}.mlp_norm.bias")
             
-            # Concatenate split GLU input projections (wi_0 and wi_1) into Wi
-            wi_0_w = get_tensor(f"layers.{i}.mlp.wi_0.weight")
-            wi_1_w = get_tensor(f"layers.{i}.mlp.wi_1.weight")
-            if wi_0_w is not None and wi_1_w is not None:
-                state_dict[f"layers.{i}.mlp.Wi.weight"] = torch.cat([wi_0_w, wi_1_w], dim=0)
+            # Try loading mlp.Wi directly (official HF name) or concatenate split GLU projections (wi_0 and wi_1)
+            copy_if_present(f"layers.{i}.mlp.Wi.weight", f"layers.{i}.mlp.Wi.weight")
+            copy_if_present(f"layers.{i}.mlp.Wi.bias", f"layers.{i}.mlp.Wi.bias")
+            
+            if f"layers.{i}.mlp.Wi.weight" not in state_dict:
+                wi_0_w = get_tensor(f"layers.{i}.mlp.wi_0.weight")
+                wi_1_w = get_tensor(f"layers.{i}.mlp.wi_1.weight")
+                if wi_0_w is not None and wi_1_w is not None:
+                    state_dict[f"layers.{i}.mlp.Wi.weight"] = torch.cat([wi_0_w, wi_1_w], dim=0)
+                    
+            if f"layers.{i}.mlp.Wi.bias" not in state_dict:
+                wi_0_b = get_tensor(f"layers.{i}.mlp.wi_0.bias")
+                wi_1_b = get_tensor(f"layers.{i}.mlp.wi_1.bias")
+                if wi_0_b is not None and wi_1_b is not None:
+                    state_dict[f"layers.{i}.mlp.Wi.bias"] = torch.cat([wi_0_b, wi_1_b], dim=0)
                 
-            wi_0_b = get_tensor(f"layers.{i}.mlp.wi_0.bias")
-            wi_1_b = get_tensor(f"layers.{i}.mlp.wi_1.bias")
-            if wi_0_b is not None and wi_1_b is not None:
-                state_dict[f"layers.{i}.mlp.Wi.bias"] = torch.cat([wi_0_b, wi_1_b], dim=0)
-                
+            # mlp.Wo (official HF name) or mlp.wo
+            copy_if_present(f"layers.{i}.mlp.Wo.weight", f"layers.{i}.mlp.Wo.weight")
+            copy_if_present(f"layers.{i}.mlp.Wo.bias", f"layers.{i}.mlp.Wo.bias")
             copy_if_present(f"layers.{i}.mlp.wo.weight", f"layers.{i}.mlp.Wo.weight")
             copy_if_present(f"layers.{i}.mlp.wo.bias", f"layers.{i}.mlp.Wo.bias")
             
         # Final Norm
         copy_if_present("norm.weight", "final_norm.weight")
         copy_if_present("norm.bias", "final_norm.bias")
+        copy_if_present("final_norm.weight", "final_norm.weight")
+        copy_if_present("final_norm.bias", "final_norm.bias")
         
     else:
         # Standard prefix stripping for BERT and generic models
@@ -251,6 +277,12 @@ def rebuild_pytorch_model(reader: GGUFReader, arch: str) -> Tuple[torch.nn.Modul
     msg = model.load_state_dict(state_dict, strict=False)
     logger.info(f"Loaded state dict into model. Missing keys: {len(msg.missing_keys)} keys, Unexpected keys: {len(msg.unexpected_keys)} keys")
     
+    # Cast projection tensors to match model parameter precision (avoid float vs Half mismatch)
+    if proj_weight is not None:
+        proj_weight = proj_weight.to(dtype=next(model.parameters()).dtype)
+    if proj_bias is not None:
+        proj_bias = proj_bias.to(dtype=next(model.parameters()).dtype)
+        
     model.eval()
     return model, proj_weight, proj_bias
 
@@ -269,7 +301,7 @@ def run_inference(
     full_text = prefix + text
     
     # Encode with HuggingFace tokenizer
-    if is_query:
+    if is_query and tok_info.get("attend_to_expansion_tokens", True):
         # ColBERT queries are padded to query_length
         inputs = tokenizer(
             full_text,
@@ -279,11 +311,12 @@ def run_inference(
             return_tensors="pt"
         )
     else:
-        # Documents are padded normally or dynamically chunked
+        # Documents are padded normally or dynamically chunked,
+        # and queries if attend_to_expansion_tokens is False
         inputs = tokenizer(
             full_text,
             padding=False,
-            max_length=tok_info["document_length"],
+            max_length=tok_info["document_length"] if not is_query else tok_info["query_length"],
             truncation=True,
             return_tensors="pt"
         )
@@ -298,9 +331,24 @@ def run_inference(
         projected = F.linear(last_hidden, proj_weight, proj_bias)
         
         # Apply L2-normalization on final dimension
-        embeddings = F.normalize(projected, p=2, dim=-1)
+        embeddings = F.normalize(projected, p=2, dim=-1).squeeze(0)
         
-    return embeddings.squeeze(0).cpu().numpy()
+        # Apply skiplist mask for documents (removing punctuation)
+        if not is_query:
+            skiplist_ids = [tokenizer.convert_tokens_to_ids(w) for w in tok_info.get("skiplist_words", [])]
+            # Strip out unk tokens or None from resolving
+            skiplist_ids = [t for t in skiplist_ids if t is not None and t != tokenizer.unk_token_id]
+            
+            input_ids = inputs["input_ids"].squeeze(0)
+            mask = torch.ones_like(input_ids, dtype=torch.bool)
+            for token_id in skiplist_ids:
+                mask = mask & (input_ids != token_id)
+            if "attention_mask" in inputs:
+                mask = mask & inputs["attention_mask"].squeeze(0).bool()
+                
+            embeddings = embeddings[mask]
+        
+    return embeddings.cpu().numpy()
 
 
 def validate_against_golden(
@@ -508,9 +556,11 @@ def validate_against_hf_direct(
             prefix = tok_info["query_prefix"] if is_query else tok_info["document_prefix"]
             full_text = prefix + text
             
+            pad_query = is_query and tok_info.get("attend_to_expansion_tokens", True)
+            
             inputs = hf_tokenizer(
                 full_text,
-                padding="max_length" if is_query else False,
+                padding="max_length" if pad_query else False,
                 max_length=tok_info["query_length"] if is_query else tok_info["document_length"],
                 truncation=True,
                 return_tensors="pt"
@@ -518,8 +568,23 @@ def validate_against_hf_direct(
             with torch.no_grad():
                 backbone_out = hf_pylate(**inputs).last_hidden_state
                 proj_out = F.linear(backbone_out, hf_proj_w, hf_proj_b)
-                emb = F.normalize(proj_out, p=2, dim=-1)
-            return emb.squeeze(0).cpu().numpy()
+                emb = F.normalize(proj_out, p=2, dim=-1).squeeze(0)
+                
+            # Filter fallback reference using the same mask
+            if not is_query:
+                skiplist_ids = [tokenizer.convert_tokens_to_ids(w) for w in tok_info.get("skiplist_words", [])]
+                skiplist_ids = [t for t in skiplist_ids if t is not None and t != tokenizer.unk_token_id]
+                
+                input_ids = inputs["input_ids"].squeeze(0)
+                mask = torch.ones_like(input_ids, dtype=torch.bool)
+                for token_id in skiplist_ids:
+                    mask = mask & (input_ids != token_id)
+                if "attention_mask" in inputs:
+                    mask = mask & inputs["attention_mask"].squeeze(0).bool()
+                    
+                emb = emb[mask]
+                
+            return emb.cpu().numpy()
 
     logger.info("Running cross-validation queries...")
     for text in test_queries:
