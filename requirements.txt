@@ -1,0 +1,9 @@
+numpy
+gguf
+safetensors
+huggingface_hub
+transformers
+tokenizers
+torch
+pytest
+pylate

@@ -144,11 +144,12 @@ def main() -> None:
     print(f"Writing llama.cpp-compliant model: {outfile_path}")
     writer = GGUFWriter(str(outfile_path), arch=arch)
     
-    # Copy metadata fields, skipping pg_colbert specific ones
-    skipped_prefixes = ["pg_colbert.", "colbert."]
+    # Copy metadata fields, skipping pg_colbert specific, internal GGUF headers, and duplicate keys
+    skipped_prefixes = ["pg_colbert.", "colbert.", "GGUF."]
+    skipped_keys = ["general.architecture"]
     for key, field in reader.fields.items():
-        # Skip colbert configs and pg_colbert tags
-        if any(key.startswith(p) for p in skipped_prefixes):
+        # Skip colbert configs, pg_colbert tags, internal header fields, and duplicates
+        if key in skipped_keys or any(key.startswith(p) for p in skipped_prefixes):
             if args.verbose:
                 print(f"Skipping metadata key: {key}")
             continue
