@@ -504,6 +504,7 @@ def main() -> None:
     query_length = 32
     doc_length = 256
     attend_to_expansion = True
+    do_query_expansion = True
     skiplist_words = []
 
     st_cfg_path = model_path / "config_sentence_transformers.json"
@@ -535,6 +536,10 @@ def main() -> None:
                     att_to_exp = st_cfg.get("attend_to_expansion_tokens")
                     if att_to_exp is not None:
                         attend_to_expansion = bool(att_to_exp)
+                        
+                    do_q_exp = st_cfg.get("do_query_expansion")
+                    if do_q_exp is not None:
+                        do_query_expansion = bool(do_q_exp)
                         
                     skip_words = st_cfg.get("skiplist_words")
                     if skip_words is not None:
@@ -610,6 +615,7 @@ def main() -> None:
     writer.add_uint32("colbert.query_length", query_length)
     writer.add_uint32("colbert.document_length", doc_length)
     writer.add_bool("colbert.attend_to_expansion_tokens", attend_to_expansion)
+    writer.add_bool("colbert.do_query_expansion", do_query_expansion)
     writer.add_array("colbert.skiplist_words", skiplist_words)
 
     # resolved special token IDs

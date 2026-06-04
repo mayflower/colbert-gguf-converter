@@ -94,6 +94,9 @@ def rebuild_tokenizer(reader: GGUFReader) -> Tuple[AutoTokenizer, Dict[str, Any]
     attend_val = reader.fields.get("colbert.attend_to_expansion_tokens")
     attend_to_expansion = decode_gguf_field(attend_val) if attend_val is not None else True
     
+    do_q_exp_val = reader.fields.get("colbert.do_query_expansion")
+    do_query_expansion = decode_gguf_field(do_q_exp_val) if do_q_exp_val is not None else True
+    
     skiplist_field = reader.fields.get("colbert.skiplist_words")
     skiplist_words = decode_gguf_field(skiplist_field) if skiplist_field is not None else []
     
@@ -103,8 +106,17 @@ def rebuild_tokenizer(reader: GGUFReader) -> Tuple[AutoTokenizer, Dict[str, Any]
         "query_length": int(decode_gguf_field(reader.fields.get("colbert.query_length")) or 32),
         "document_length": int(decode_gguf_field(reader.fields.get("colbert.document_length")) or 300),
         "attend_to_expansion_tokens": bool(attend_to_expansion),
+        "do_query_expansion": bool(do_query_expansion),
         "skiplist_words": skiplist_words,
     }
+
+    # Set pad_token to mask_token for MLM query expansion matching PyLate
+    if do_query_expansion and tokenizer.mask_token_id is not None:
+        tokenizer.pad_token_id = tokenizer.mask_token_id
+        tokenizer.pad_token = tokenizer.mask_token
+    elif do_query_expansion and tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token = tokenizer.eos_token
     
     # Keep reference to tmp_dir so it doesn't get cleaned up too early
     tokenizer._temp_dir_ref = tmp_dir
@@ -301,8 +313,9 @@ def run_inference(
     full_text = prefix + text
     
     # Encode with HuggingFace tokenizer
-    if is_query and tok_info.get("attend_to_expansion_tokens", True):
-        # ColBERT queries are padded to query_length
+    pad_query = is_query and tok_info.get("do_query_expansion", True)
+    
+    if pad_query:
         inputs = tokenizer(
             full_text,
             padding="max_length",
@@ -310,9 +323,9 @@ def run_inference(
             truncation=True,
             return_tensors="pt"
         )
+        if tok_info.get("attend_to_expansion_tokens", True):
+            inputs["attention_mask"].fill_(1)
     else:
-        # Documents are padded normally or dynamically chunked,
-        # and queries if attend_to_expansion_tokens is False
         inputs = tokenizer(
             full_text,
             padding=False,
@@ -556,7 +569,7 @@ def validate_against_hf_direct(
             prefix = tok_info["query_prefix"] if is_query else tok_info["document_prefix"]
             full_text = prefix + text
             
-            pad_query = is_query and tok_info.get("attend_to_expansion_tokens", True)
+            pad_query = is_query and tok_info.get("do_query_expansion", True)
             
             inputs = hf_tokenizer(
                 full_text,
@@ -565,6 +578,8 @@ def validate_against_hf_direct(
                 truncation=True,
                 return_tensors="pt"
             )
+            if pad_query and tok_info.get("attend_to_expansion_tokens", True):
+                inputs["attention_mask"].fill_(1)
             with torch.no_grad():
                 backbone_out = hf_pylate(**inputs).last_hidden_state
                 proj_out = F.linear(backbone_out, hf_proj_w, hf_proj_b)
