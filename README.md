@@ -4,6 +4,18 @@ This repository provides a Python-based converter and suite of inspection tools 
 
 Unlike generic llama.cpp LLM decoder converters, this tool preserves the backbone transformer structures and embeds the ColBERT late-interaction dense projection layers, similarity metrics, tokenizer configurations, and query/document metadata.
 
+## Converted GGUF Model Repositories
+
+The following converted ColBERT GGUF models (supporting both custom `pg_colbert` and standard `llama_cpp` target runtimes, sidecar profiles, golden token plans, and verification parity reports) are available on the Hugging Face Hub under the `johannhartmann` namespace:
+
+*   **[SauerkrautLM-Multi-ModernColBERT-GGUF](https://huggingface.co/johannhartmann/SauerkrautLM-Multi-ModernColBERT-GGUF)** (Source: [VAGOsolutions/SauerkrautLM-Multi-ModernColBERT](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-ModernColBERT))
+*   **[SauerkrautLM-Multi-Reason-ModernColBERT-GGUF](https://huggingface.co/johannhartmann/SauerkrautLM-Multi-Reason-ModernColBERT-GGUF)** (Source: [VAGOsolutions/SauerkrautLM-Multi-Reason-ModernColBERT](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-Reason-ModernColBERT))
+*   **[SauerkrautLM-Multi-ColBERT-15m-GGUF](https://huggingface.co/johannhartmann/SauerkrautLM-Multi-ColBERT-15m-GGUF)** (Source: [VAGOsolutions/SauerkrautLM-Multi-ColBERT-15m](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-ColBERT-15m))
+*   **[SauerkrautLM-Multi-ColBERT-33m-GGUF](https://huggingface.co/johannhartmann/SauerkrautLM-Multi-ColBERT-33m-GGUF)** (Source: [VAGOsolutions/SauerkrautLM-Multi-ColBERT-33m](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-ColBERT-33m))
+*   **[GTE-ModernColBERT-v1-GGUF](https://huggingface.co/johannhartmann/GTE-ModernColBERT-v1-GGUF)** (Source: [lightonai/GTE-ModernColBERT-v1](https://huggingface.co/lightonai/GTE-ModernColBERT-v1))
+*   **[Reason-ModernColBERT-GGUF](https://huggingface.co/johannhartmann/Reason-ModernColBERT-GGUF)** (Source: [lightonai/Reason-ModernColBERT](https://huggingface.co/lightonai/Reason-ModernColBERT))
+*   **[Agent-ModernColBERT-GGUF](https://huggingface.co/johannhartmann/Agent-ModernColBERT-GGUF)** (Source: [lightonai/Agent-ModernColBERT](https://huggingface.co/lightonai/Agent-ModernColBERT))
+
 ## Included Tools & Structure
 
 * **[docs/COLBERT_GGUF_SPEC.md](docs/COLBERT_GGUF_SPEC.md)**: Specifications detailing metadata keys, tensor naming conventions, and schema requirements.

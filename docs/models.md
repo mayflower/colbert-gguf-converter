@@ -38,3 +38,16 @@ This document lists the most popular and foundational **ModernColBERT** models h
     *   **Description**: Tailored for agentic workflows and search tools, incorporating reasoning traces directly to boost agent retrieval accuracy.
     *   **Context Length**: 8192 tokens
     *   **Parameters**: ~150 million
+
+---
+
+## 4. Smaller ColBERT Models (VAGOsolutions)
+
+*   **[VAGOsolutions/SauerkrautLM-Multi-ColBERT-15m](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-ColBERT-15m)**
+    *   **Description**: Extremely lightweight multilingual ColBERT model optimized for low-resource environments and high-throughput use-cases.
+    *   **Parameters**: ~15 million
+
+*   **[VAGOsolutions/SauerkrautLM-Multi-ColBERT-33m](https://huggingface.co/VAGOsolutions/SauerkrautLM-Multi-ColBERT-33m)**
+    *   **Description**: Compact multilingual ColBERT model offering a strong balance between parameter count/inference speed and retrieval quality.
+    *   **Parameters**: ~33 million
+
