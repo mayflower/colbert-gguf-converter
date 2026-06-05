@@ -13,6 +13,7 @@ Unlike generic llama.cpp LLM decoder converters, this tool preserves the backbon
 * **[tools/inspect_colbert_hf.py](tools/inspect_colbert_hf.py)**: Diagnostic tool to list safetensors tensor shapes, dtypes, and configuration parameters of source Hugging Face repositories.
 * **[tools/create_pylate_golden.py](tools/create_pylate_golden.py)**: Reference vector generator that uses the original `pylate` package to create query/document embedding test benchmarks.
 * **[tools/create_colbert_profile_golden.py](tools/create_colbert_profile_golden.py)**: Token plan golden generator to compare tokenization, query expansion, retention, and skiplist behavior before vector comparison.
+* **[tools/verify_pylate_parity.py](tools/verify_pylate_parity.py)**: Parity verification tool that generates validation reports checking GGUF/profile correctness against reference HF models and PyLate vector goldens.
 * **[tests/](tests/)**: Automated unit test suites validating configuration loading, GGUF metadata writing, and tensor maps using mock fixtures.
 * **[examples/convert_sauerkraut_moderncolbert.sh](examples/convert_sauerkraut_moderncolbert.sh)**: End-to-end local conversion and validation smoke test script.
 
@@ -90,6 +91,23 @@ python tools/create_colbert_profile_golden.py \
   --role query \
   --outfile /tmp/colbert_query_golden_plan.json
 ```
+
+### 5. Running Parity Verification
+
+Generate a parity verification report to compare a converted GGUF model and its profile sidecar against Hugging Face tokenizers and PyLate reference vectors:
+
+```bash
+python tools/verify_pylate_parity.py \
+  --model-name-or-path VAGOsolutions/SauerkrautLM-Multi-ModernColBERT \
+  --gguf /tmp/sauerkraut-multi-moderncolbert.f16.gguf \
+  --profile /tmp/sauerkraut-multi-moderncolbert.f16.gguf.colbert_profile.json \
+  --texts-file tests/fixtures/validation_texts.txt \
+  --role query \
+  --outfile /tmp/parity_report.json
+```
+
+> [!WARNING]
+> This tool verifies converter and profile correctness using reference python models and tokenization rules, not the correctness of the PostgreSQL vector runtime C++/GGML execution.
 
 ---
 
