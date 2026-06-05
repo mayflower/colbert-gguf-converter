@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 sys.path.append(str(Path(__file__).parent))
 
 from colbert_profile import ColbertProfile, validate_profile
-from validate_colbert_gguf_inference import decode_gguf_field, rebuild_tokenizer
+from validate_colbert_gguf_inference import decode_gguf_field, rebuild_tokenizer, rebuild_pytorch_model, run_inference
 
 try:
     from gguf import GGUFReader
@@ -416,11 +416,49 @@ def main() -> None:
         known_limitations.append("PyLate library is not installed or failed to import; reference vector generation skipped.")
         vector_golden_available = False
 
+    # 5.b. Verify GGUF vector parity against PyLate goldens
+    vector_parity_valid = False
+    if args.gguf and TRANSFORMERS_AVAILABLE and vector_golden_available and GGUFReader is not None:
+        try:
+            reader = GGUFReader(Path(args.gguf))
+            arch = decode_gguf_field(reader.fields.get("general.architecture"))
+            model, proj_weight, proj_bias = rebuild_pytorch_model(reader, arch)
+            g_tokenizer, g_tok_info = rebuild_tokenizer(reader)
+            
+            vector_parity_valid = True
+            for i, text_entry in enumerate(texts_report):
+                gguf_emb = run_inference(
+                    model=model,
+                    tokenizer=g_tokenizer,
+                    tok_info=g_tok_info,
+                    text=text_entry["text"],
+                    is_query=(args.role == "query"),
+                    proj_weight=proj_weight,
+                    proj_bias=proj_bias
+                )
+                golden_emb = np.array(text_entry["vector_golden"])
+                if gguf_emb.shape != golden_emb.shape:
+                    vector_parity_valid = False
+                    known_limitations.append(
+                        f"Vector shape mismatch for '{text_entry['text'][:20]}...': GGUF={gguf_emb.shape} vs PyLate={golden_emb.shape}"
+                    )
+                else:
+                    mae = np.mean(np.abs(gguf_emb - golden_emb))
+                    if mae >= 1e-3:
+                        vector_parity_valid = False
+                        known_limitations.append(
+                            f"Vector parity MAE exceeded for '{text_entry['text'][:20]}...': MAE={mae:.6f}"
+                        )
+        except Exception as e:
+            known_limitations.append(f"Failed to check GGUF vector parity: {e}")
+            vector_parity_valid = False
+
     # 6. Build and write Parity Report
     report = {
         "profile_valid": profile_valid,
         "token_plan_valid": token_plan_valid,
         "vector_golden_available": vector_golden_available,
+        "vector_parity_valid": vector_parity_valid,
         "known_limitations": known_limitations,
         "texts": texts_report
     }
@@ -434,6 +472,7 @@ def main() -> None:
     print(f"  profile_valid:           {profile_valid}")
     print(f"  token_plan_valid:        {token_plan_valid}")
     print(f"  vector_golden_available: {vector_golden_available}")
+    print(f"  vector_parity_valid:     {vector_parity_valid}")
     
     # 7. Exit codes
     # If the user supplied a profile/GGUF but it failed validation, exit with status 1.
@@ -443,6 +482,9 @@ def main() -> None:
         sys.exit(1)
     if args.gguf and not token_plan_valid:
         print("Verification FAILED: GGUF tokenization plan mismatch.", file=sys.stderr)
+        sys.exit(1)
+    if args.gguf and vector_golden_available and not vector_parity_valid:
+        print("Verification FAILED: GGUF vector parity mismatch.", file=sys.stderr)
         sys.exit(1)
         
     print("Verification SUCCESS.")

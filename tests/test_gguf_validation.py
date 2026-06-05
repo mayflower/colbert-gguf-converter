@@ -308,5 +308,51 @@ def test_publisher_with_validation(fake_colbert_model_dir, monkeypatch):
     assert "init" in mock_calls
     assert ("create_repo", "mock-user/test-model-gguf") in mock_calls
     assert ("upload_file", expected_gguf_name, "mock-user/test-model-gguf") in mock_calls
+    assert ("upload_file", expected_gguf_name + ".colbert_profile.json", "mock-user/test-model-gguf") in mock_calls
+    assert ("upload_file", expected_gguf_name + ".token_plan_golden.json", "mock-user/test-model-gguf") in mock_calls
+    assert ("upload_file", expected_gguf_name + ".parity_report.json", "mock-user/test-model-gguf") in mock_calls
     assert ("upload_file", "README.md", "mock-user/test-model-gguf") in mock_calls
+
+
+def test_generate_model_card():
+    from tools.publish_colbert_gguf import generate_model_card
+    
+    card = generate_model_card(
+        model_id="VAGOsolutions/SauerkrautLM-Multi-ModernColBERT",
+        target_repo_id="test/SauerkrautLM-Multi-ModernColBERT-GGUF",
+        outtype="f16",
+        target_runtime="both",
+        profile_schema="pg_colbert_profile_v1",
+        token_plan_parity_passed=True,
+        vector_parity_checked=True,
+        vector_parity_passed=True,
+        cli_command="python tools/convert_colbert_hf_to_gguf.py ..."
+    )
+    
+    assert "pg_colbert_profile_v1" in card
+    assert "both" in card
+    assert "Strict PyLate Token-Plan Parity**: `PASSED`" in card
+    assert "Vector Parity Checked**: `YES`" in card
+    assert "Strict Vector Parity Status**: `PASSED`" in card
+    assert "python tools/convert_colbert_hf_to_gguf.py ..." in card
+    assert "PASSED (verified numerical equivalence with reference PyLate embeddings)" in card
+    
+    # Test when vector parity failed/not checked
+    card_failed = generate_model_card(
+        model_id="VAGOsolutions/SauerkrautLM-Multi-ModernColBERT",
+        target_repo_id="test/SauerkrautLM-Multi-ModernColBERT-GGUF",
+        outtype="f16",
+        target_runtime="pg_colbert",
+        profile_schema="pg_colbert_profile_v1",
+        token_plan_parity_passed=False,
+        vector_parity_checked=False,
+        vector_parity_passed=False,
+        cli_command="python tools/convert_colbert_hf_to_gguf.py ..."
+    )
+    
+    assert "Strict PyLate Token-Plan Parity**: `FAILED`" in card_failed
+    assert "Vector Parity Checked**: `NO`" in card_failed
+    assert "Strict Vector Parity Status**: `FAILED`" in card_failed
+    assert "Not strictly verified or verification failed" in card_failed
+
 
