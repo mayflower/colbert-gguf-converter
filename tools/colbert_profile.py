@@ -93,6 +93,48 @@ class ColbertProfile:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ColbertProfile":
+        st = SpecialTokensProfile(**d["tokenizer"]["special_tokens"])
+        prefix = PrefixTokenIdsProfile(**d["tokenizer"]["prefix_token_ids"])
+        tokenizer = TokenizerProfile(
+            source=d["tokenizer"]["source"],
+            tokenizer_model=d["tokenizer"]["tokenizer_model"],
+            tokenizer_json_sha256=d["tokenizer"].get("tokenizer_json_sha256"),
+            special_tokens=st,
+            prefix_token_ids=prefix
+        )
+        query = QueryProfile(**d["query"])
+        doc = DocumentProfile(**d["document"])
+        
+        proj_modules = [ProjectionModule(**m) for m in d["projection"].get("modules", [])]
+        projection = ProjectionProfile(
+            kind=d["projection"]["kind"],
+            input_dim=d["projection"]["input_dim"],
+            output_dim=d["projection"]["output_dim"],
+            modules=proj_modules,
+            normalize_after=d["projection"].get("normalize_after", False)
+        )
+        
+        comp = CompatibilityProfile(**d["compatibility"])
+        
+        return cls(
+            schema=d["schema"],
+            source_model_id=d["source_model_id"],
+            source_revision=d["source_revision"],
+            converter_version=d["converter_version"],
+            backbone_family=d["backbone_family"],
+            colbert_family=d["colbert_family"],
+            similarity=d["similarity"],
+            output_dim=d["output_dim"],
+            normalize=d["normalize"],
+            tokenizer=tokenizer,
+            query=query,
+            document=doc,
+            projection=projection,
+            compatibility=comp
+        )
+
 
 def validate_profile(profile: ColbertProfile) -> None:
     """Validate ColBERT profile parameters against the specification schema."""

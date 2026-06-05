@@ -163,3 +163,27 @@ def test_write_profile_sidecar():
         with open(sidecar_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         assert data["schema"] == "pg_colbert_profile_v1"
+
+def test_from_dict_and_validate():
+    profile = get_valid_minimal_profile()
+    d = profile.to_dict()
+    
+    # 1. Parse valid dict
+    parsed = ColbertProfile.from_dict(d)
+    assert parsed.schema == "pg_colbert_profile_v1"
+    assert parsed.output_dim == 128
+    assert parsed.projection.kind == "dense"
+    assert len(parsed.projection.modules) == 1
+    assert parsed.projection.modules[0].type == "linear"
+    validate_profile(parsed)
+    
+    # 2. Parse identity projection without modules
+    identity_profile = get_valid_minimal_profile()
+    identity_profile.projection.kind = "identity"
+    identity_profile.projection.modules = []
+    d_id = identity_profile.to_dict()
+    parsed_id = ColbertProfile.from_dict(d_id)
+    assert parsed_id.projection.kind == "identity"
+    assert parsed_id.projection.modules == []
+    validate_profile(parsed_id)
+

@@ -16,6 +16,10 @@ except ImportError:
     print("Error: gguf package is not installed. Run 'pip install gguf'.", file=sys.stderr)
     sys.exit(1)
 
+# Ensure parent directory is in path so tools.colbert_profile is importable
+sys.path.append(str(Path(__file__).parent.parent))
+from tools.colbert_profile import ColbertProfile, validate_profile
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect and validate a pg_colbert_v1 GGUF file.")
@@ -84,8 +88,8 @@ def main() -> None:
     for f_name in fields:
         field = reader.fields[f_name]
         val_str = format_field_value(field)
-        # Avoid printing massive tokenizer JSON in non-verbose mode
-        if "tokenizer" in f_name and not args.verbose:
+        # Avoid printing massive tokenizer/profile JSON in non-verbose mode
+        if ("tokenizer" in f_name or "profile_json" in f_name) and not args.verbose:
             val_str = f"[{len(val_str)} characters of JSON string]"
         print(f"{f_name}: {val_str}")
 
@@ -122,6 +126,20 @@ def main() -> None:
         if k not in reader.fields:
             errors.append(f"Missing ColBERT config key: '{k}'")
 
+    # Check and validate ColBERT profile JSON
+    profile = None
+    profile_field = reader.fields.get("pg_colbert.profile_json")
+    if profile_field is None:
+        errors.append("Missing required ColBERT profile key: 'pg_colbert.profile_json'")
+    else:
+        profile_json_val = decode_gguf_field(profile_field)
+        try:
+            profile_dict = json.loads(profile_json_val)
+            profile = ColbertProfile.from_dict(profile_dict)
+            validate_profile(profile)
+        except Exception as e:
+            errors.append(f"Failed to parse or validate ColBERT profile: {e}")
+
     # Check tensors
     tensors = reader.tensors
     print(f"Total tensor count: {len(tensors)}")
@@ -147,6 +165,32 @@ def main() -> None:
             print(f"  - [ERROR] {err}")
     else:
         print("Validation: SUCCESS (All required keys and tensors are present and valid!)")
+
+    if profile is not None:
+        print("\n=== COLBERT PROFILE SUMMARY ===")
+        print(f"schema: {profile.schema}")
+        print(f"output_dim: {profile.output_dim}")
+        print(f"query prefix/length/pad_to: prefix={json.dumps(profile.query.prefix)}, length={profile.query.max_length}, pad_to={profile.query.pad_to}")
+        print(f"document prefix/length: prefix={json.dumps(profile.document.prefix)}, length={profile.document.max_length}")
+        print(f"skiplist token count: {len(profile.document.skiplist_token_ids)}")
+        
+        if profile.projection.kind == "identity":
+            print("projection kind/modules: kind=identity")
+        else:
+            modules_desc = []
+            for m in profile.projection.modules:
+                modules_desc.append(f"{m.type}({m.in_features} -> {m.out_features}, bias={m.bias})")
+            print(f"projection kind/modules: kind={profile.projection.kind}, modules=[{', '.join(modules_desc)}]")
+            
+        comp_str = (
+            f"llama_cpp_loadable={profile.compatibility.llama_cpp_loadable}, "
+            f"requires_profile={profile.compatibility.requires_profile}, "
+            f"strict_pylate_profile={profile.compatibility.strict_pylate_profile}"
+        )
+        if profile.compatibility.known_limitations:
+            comp_str += f", limitations={profile.compatibility.known_limitations}"
+        print(f"compatibility flags: {comp_str}")
+
 
     # 2. Print all tensors list
     if args.verbose:

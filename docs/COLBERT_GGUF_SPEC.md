@@ -9,6 +9,21 @@ All compliant ColBERT GGUF files must define the schema version key:
 
 For comprehensive runtime configuration, models should also embed a formal ColBERT runtime profile under `pg_colbert.profile_json` or provide it as a sidecar JSON file (see [COLBERT_PROFILE_SPEC.md](COLBERT_PROFILE_SPEC.md)).
 
+## ColBERT Runtime Profile
+
+To support complete self-contained inference, the GGUF file embeds a structured model runtime profile:
+- **GGUF Metadata Key**: `pg_colbert.profile_json`
+- **Type**: `string`
+- **Format**: UTF-8 encoded JSON string matching the `pg_colbert_profile_v1` schema defined in [COLBERT_PROFILE_SPEC.md](COLBERT_PROFILE_SPEC.md).
+
+### Sidecar Profile JSON
+
+By default, every conversion also writes a standalone JSON file alongside the GGUF file:
+- **Filename Convention**: `<outfile>.colbert_profile.json` (where `<outfile>` is the path to the written GGUF file).
+- **Format**: Identical UTF-8 JSON matching the `pg_colbert_profile_v1` schema.
+- **Control**: Generation of the sidecar can be disabled by passing the `--no-profile-sidecar` flag to the converter.
+- **Purpose**: Enables rapid profiling, inspection, and tooling consumption without requiring the caller to parse the main GGUF header.
+
 ## General & Provenance Metadata
 
 Standard llama.cpp / GGUF metadata keys for model provenance:

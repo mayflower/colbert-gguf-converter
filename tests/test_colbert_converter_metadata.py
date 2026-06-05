@@ -170,3 +170,25 @@ def test_gguf_writing(fake_colbert_model_dir):
         sidecar_data = json.load(f)
     assert sidecar_data["schema"] == "pg_colbert_profile_v1"
     assert sidecar_data["projection"]["input_dim"] == 256
+
+    # Run tools/inspect_colbert_gguf.py on the converted GGUF file
+    inspect_cmd = [
+        sys.executable,
+        str(Path(__file__).parent.parent / "tools/inspect_colbert_gguf.py"),
+        str(outfile)
+    ]
+    inspect_res = subprocess.run(inspect_cmd, capture_output=True, text=True)
+    assert inspect_res.returncode == 0, f"Inspector failed: {inspect_res.stderr}\nOutput: {inspect_res.stdout}"
+    
+    # Verify inspector validates and prints profile summary
+    output = inspect_res.stdout
+    assert "Validation: SUCCESS" in output
+    assert "=== COLBERT PROFILE SUMMARY ===" in output
+    assert "schema: pg_colbert_profile_v1" in output
+    assert "output_dim: 128" in output
+    assert 'query prefix/length/pad_to: prefix="[Q] ", length=32, pad_to=32' in output
+    assert 'document prefix/length: prefix="[D] ", length=300' in output
+    assert "skiplist token count: 3" in output
+    assert "projection kind/modules: kind=dense, modules=[linear(256 -> 128, bias=False)]" in output
+    assert "compatibility flags: llama_cpp_loadable=True, requires_profile=True, strict_pylate_profile=True" in output
+
