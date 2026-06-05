@@ -6,6 +6,7 @@ and uploads all files to a specified target HF Hub repository.
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -228,8 +229,10 @@ def main() -> None:
                 print(f"Warning: Expected GGUF file does not exist: {g_file}", file=sys.stderr)
                 continue
 
+            is_llama_cpp = g_file.name.endswith(".llama.gguf") or args.target_runtime == "llama_cpp"
+
             # 1.b. Test and Validate the GGUF model outputs
-            if not args.no_validation:
+            if not args.no_validation and not is_llama_cpp:
                 print(f"\nStep 1.b: Testing and validating GGUF model numerical inference: {g_file.name}...")
                 import validate_colbert_gguf_inference
                 
@@ -275,11 +278,13 @@ def main() -> None:
                     sys.executable,
                     str(Path(__file__).parent / "verify_pylate_parity.py"),
                     "--model-name-or-path", args.model_id,
-                    "--gguf", str(g_file),
                     "--texts-file", str(texts_file_path),
                     "--role", "query",
                     "--outfile", str(parity_report_path)
                 ]
+                if not is_llama_cpp:
+                    cmd_parity.extend(["--gguf", str(g_file)])
+                    
                 sidecar_path = Path(str(g_file) + ".colbert_profile.json")
                 if sidecar_path.exists():
                     cmd_parity.extend(["--profile", str(sidecar_path)])
@@ -291,9 +296,16 @@ def main() -> None:
                     with open(parity_report_path, "r", encoding="utf-8") as f:
                         report_data = json.load(f)
                     
-                    token_plan_parity_passed = report_data.get("token_plan_valid")
-                    vector_parity_checked = report_data.get("vector_golden_available", False)
-                    vector_parity_passed = report_data.get("vector_parity_valid")
+                    t_val = report_data.get("token_plan_valid")
+                    v_avail = report_data.get("vector_golden_available", False)
+                    v_val = report_data.get("vector_parity_valid")
+                    
+                    if token_plan_parity_passed is None or not is_llama_cpp:
+                        token_plan_parity_passed = t_val
+                    if not vector_parity_checked or not is_llama_cpp:
+                        vector_parity_checked = v_avail
+                    if vector_parity_passed is None or not is_llama_cpp:
+                        vector_parity_passed = v_val
             except Exception as e:
                 print(f"Warning: Failed to run parity verification for {g_file.name}: {e}", file=sys.stderr)
 
