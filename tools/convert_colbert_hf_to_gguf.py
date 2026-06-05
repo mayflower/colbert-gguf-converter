@@ -23,6 +23,22 @@ except ImportError:
     print("Error: gguf package is not installed. Run 'pip install gguf'.", file=sys.stderr)
     sys.exit(1)
 
+# Handle local tools imports
+sys.path.append(str(Path(__file__).parent.resolve()))
+from colbert_profile import (
+    ColbertProfile,
+    TokenizerProfile,
+    SpecialTokensProfile,
+    PrefixTokenIdsProfile,
+    QueryProfile,
+    DocumentProfile,
+    ProjectionProfile,
+    ProjectionModule,
+    CompatibilityProfile,
+    validate_profile,
+    write_profile_sidecar
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("convert_colbert_hf")
 
@@ -70,6 +86,10 @@ def parse_args() -> argparse.Namespace:
                         help="Trust remote code (true or false, default false)")
     parser.add_argument("--allow-shape-mismatch", action="store_true",
                         help="Allow dense projection dimension mismatch with backbone hidden_size")
+    parser.add_argument("--write-profile-sidecar", action="store_true", default=True,
+                        help="Write the ColBERT profile sidecar JSON file (default: true)")
+    parser.add_argument("--no-profile-sidecar", action="store_false", dest="write_profile_sidecar",
+                        help="Do not write the ColBERT profile sidecar JSON file")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     
     return parser.parse_args()
@@ -162,7 +182,20 @@ def parse_backbone_config(model_path: Path) -> BackboneConfig:
     return backbone_cfg
 
 
-def load_tokenizer_info(model_path: Path) -> Dict[str, Any]:
+def load_sentence_transformers_config(model_path: Path) -> Dict[str, Any]:
+    st_cfg_path = model_path / "config_sentence_transformers.json"
+    if st_cfg_path.exists():
+        try:
+            with open(st_cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if isinstance(cfg, dict):
+                    return cfg
+        except Exception as e:
+            logger.warning(f"Failed to parse config_sentence_transformers.json: {e}")
+    return {}
+
+
+def load_tokenizer_profile(model_path: Path, st_config: Dict[str, Any]) -> Tuple[TokenizerProfile, AutoTokenizer, Dict[str, Any]]:
     # We resolve tokenizer info and special tokens
     tokenizer_json_path = model_path / "tokenizer.json"
     tokenizer_config_path = model_path / "tokenizer_config.json"
@@ -174,6 +207,10 @@ def load_tokenizer_info(model_path: Path) -> Dict[str, Any]:
     with open(tokenizer_json_path, "r", encoding="utf-8") as f:
         tok_json_str = f.read()
         
+    # Calculate SHA256 of tokenizer.json
+    import hashlib
+    sha256 = hashlib.sha256(tok_json_str.encode("utf-8")).hexdigest()
+        
     tok_cfg_str = ""
     if tokenizer_config_path.exists():
         with open(tokenizer_config_path, "r", encoding="utf-8") as f:
@@ -184,82 +221,210 @@ def load_tokenizer_info(model_path: Path) -> Dict[str, Any]:
         with open(special_tokens_path, "r", encoding="utf-8") as f:
             spec_tokens_str = f.read()
 
-    # Load via transformers to resolve tokens
     try:
         tokenizer = AutoTokenizer.from_pretrained(str(model_path))
     except Exception as e:
-        logger.warning(f"Could not load AutoTokenizer from path: {e}. Tokenizer details might be incomplete.")
-        tokenizer = None
+        logger.warning(f"Could not load AutoTokenizer from path: {e}.")
+        raise e
 
-    pad_token_id = tokenizer.pad_token_id if (tokenizer and tokenizer.pad_token_id is not None) else 0
-    cls_token_id = tokenizer.cls_token_id if (tokenizer and tokenizer.cls_token_id is not None) else 101
-    sep_token_id = tokenizer.sep_token_id if (tokenizer and tokenizer.sep_token_id is not None) else 102
-    bos_token_id = tokenizer.bos_token_id if (tokenizer and tokenizer.bos_token_id is not None) else None
-    eos_token_id = tokenizer.eos_token_id if (tokenizer and tokenizer.eos_token_id is not None) else None
+    # Determine special token IDs
+    cls_token_id = tokenizer.cls_token_id
+    sep_token_id = tokenizer.sep_token_id
+    pad_token_id = tokenizer.pad_token_id
+    mask_token_id = tokenizer.mask_token_id
 
-    # Defaults or configuration values for ColBERT prefixes
-    query_prefix = "[Q] "
-    doc_prefix = "[D] "
-    
-    # Try reading from config_sentence_transformers.json first
-    st_cfg_path = model_path / "config_sentence_transformers.json"
-    if st_cfg_path.exists():
-        try:
-            with open(st_cfg_path, "r", encoding="utf-8") as f:
-                st_cfg = json.load(f)
-                if isinstance(st_cfg, dict):
-                    if "query_prefix" in st_cfg:
-                        query_prefix = st_cfg["query_prefix"]
-                    if "document_prefix" in st_cfg:
-                        doc_prefix = st_cfg["document_prefix"]
-        except Exception:
-            pass
-
-    if tokenizer and hasattr(tokenizer, "query_prefix") and tokenizer.query_prefix:
-        query_prefix = tokenizer.query_prefix
-    if tokenizer and hasattr(tokenizer, "doc_prefix") and tokenizer.doc_prefix:
-        doc_prefix = tokenizer.doc_prefix
-
-    # Get query/document prefix token IDs
-    query_prefix_ids = []
-    doc_prefix_ids = []
-    if tokenizer:
-        query_prefix_ids = tokenizer.encode(query_prefix, add_special_tokens=False)
-        doc_prefix_ids = tokenizer.encode(doc_prefix, add_special_tokens=False)
+    # Retrieve prefixes from st_config or fall back to standard defaults
+    query_prefix = st_config.get("query_prefix") or "[Q] "
+    doc_prefix = st_config.get("document_prefix") or "[D] "
 
     # q_token_id / d_token_id resolution
-    # Try resolving literal "[Q]" and "[D]" or fall back to prefix IDs
-    q_token_id = None
-    d_token_id = None
-    if tokenizer:
-        q_id = tokenizer.convert_tokens_to_ids("[Q]")
-        if q_id != tokenizer.unk_token_id:
-            q_token_id = q_id
-        elif query_prefix_ids:
-            q_token_id = query_prefix_ids[0]
-            
-        d_id = tokenizer.convert_tokens_to_ids("[D]")
-        if d_id != tokenizer.unk_token_id:
-            d_token_id = d_id
-        elif doc_prefix_ids:
-            d_token_id = doc_prefix_ids[0]
+    q_id = tokenizer.convert_tokens_to_ids("[Q]")
+    if q_id == tokenizer.unk_token_id:
+        q_prefix_ids = tokenizer.encode(query_prefix, add_special_tokens=False)
+        q_id = q_prefix_ids[0] if q_prefix_ids else None
+        
+    d_id = tokenizer.convert_tokens_to_ids("[D]")
+    if d_id == tokenizer.unk_token_id:
+        doc_prefix_ids = tokenizer.encode(doc_prefix, add_special_tokens=False)
+        d_id = doc_prefix_ids[0] if doc_prefix_ids else None
 
-    return {
+    # Construct SpecialTokensProfile
+    special_tokens = SpecialTokensProfile(
+        cls_token_id=cls_token_id,
+        sep_token_id=sep_token_id,
+        pad_token_id=pad_token_id,
+        mask_token_id=mask_token_id,
+        q_token_id=q_id,
+        d_token_id=d_id
+    )
+
+    # Prefix IDs
+    query_prefix_ids = tokenizer.encode(query_prefix, add_special_tokens=False)
+    doc_prefix_ids = tokenizer.encode(doc_prefix, add_special_tokens=False)
+
+    prefix_token_ids = PrefixTokenIdsProfile(
+        query=query_prefix_ids,
+        document=doc_prefix_ids
+    )
+
+    tokenizer_model_type = tokenizer.__class__.__name__.replace("Fast", "").replace("Tokenizer", "").lower()
+
+    tokenizer_profile = TokenizerProfile(
+        source="hf_json",
+        tokenizer_model=tokenizer_model_type,
+        tokenizer_json_sha256=sha256,
+        special_tokens=special_tokens,
+        prefix_token_ids=prefix_token_ids
+    )
+
+    # Collect tokenizer raw info dictionary for GGUF writer
+    tokenizer_raw_info = {
         "tokenizer_json": tok_json_str,
         "tokenizer_config": tok_cfg_str,
         "special_tokens_map": spec_tokens_str,
         "pad_token_id": pad_token_id,
         "cls_token_id": cls_token_id,
         "sep_token_id": sep_token_id,
-        "bos_token_id": bos_token_id,
-        "eos_token_id": eos_token_id,
+        "bos_token_id": tokenizer.bos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
         "query_prefix": query_prefix,
         "document_prefix": doc_prefix,
         "query_prefix_ids": query_prefix_ids,
         "document_prefix_ids": doc_prefix_ids,
-        "q_token_id": q_token_id,
-        "d_token_id": d_token_id
+        "q_token_id": q_id,
+        "d_token_id": d_id
     }
+
+    return tokenizer_profile, tokenizer, tokenizer_raw_info
+
+
+def load_query_document_profile(
+    model_path: Path, 
+    tokenizer: AutoTokenizer, 
+    st_config: Dict[str, Any]
+) -> Tuple[QueryProfile, DocumentProfile, List[str]]:
+    # Extract query config
+    query_prefix = st_config.get("query_prefix") or "[Q] "
+    query_length = int(st_config.get("query_length") or 32)
+    do_query_expansion = bool(st_config.get("do_query_expansion", True))
+    attend_to_expansion = bool(st_config.get("attend_to_expansion_tokens", True))
+
+    # PyLate MLM query expansion pads using MASK token if available
+    pad_token_id = tokenizer.pad_token_id
+    pad_token = tokenizer.pad_token
+    if do_query_expansion:
+        if tokenizer.mask_token_id is not None:
+            pad_token_id = tokenizer.mask_token_id
+            pad_token = tokenizer.mask_token
+        elif tokenizer.eos_token_id is not None:
+            pad_token_id = tokenizer.eos_token_id
+            pad_token = tokenizer.eos_token
+
+    query_profile = QueryProfile(
+        prefix=query_prefix,
+        max_length=query_length,
+        pad_to=query_length if do_query_expansion else None,
+        pad_token_id=pad_token_id,
+        pad_token=pad_token,
+        attend_to_expansion_tokens=attend_to_expansion,
+        retain_policy="all",
+        output_policy="all",
+        token_type_id=0
+    )
+
+    # Extract doc config
+    doc_prefix = st_config.get("document_prefix") or "[D] "
+    doc_length = int(st_config.get("document_length") or 256)
+    
+    import string
+    skiplist_words = st_config.get("skiplist_words")
+    if skiplist_words is None:
+        skiplist_words = list(string.punctuation)
+    else:
+        skiplist_words = list(skiplist_words)
+
+    skiplist_token_ids = []
+    limitations = []
+    for word in skiplist_words:
+        ids = tokenizer.encode(word, add_special_tokens=False)
+        if len(ids) == 1:
+            skiplist_token_ids.append(ids[0])
+        elif len(ids) > 1:
+            limitations.append(
+                f"Skiplist word '{word}' tokenizes to multiple IDs {ids}. Only single-token skiplist words are supported in standard C++ runtime."
+            )
+
+    doc_profile = DocumentProfile(
+        prefix=doc_prefix,
+        max_length=doc_length,
+        pad_to=None,
+        retain_policy="mask_and_skiplist",
+        skiplist_words=skiplist_words,
+        skiplist_token_ids=skiplist_token_ids,
+        token_type_id=0
+    )
+
+    return query_profile, doc_profile, limitations
+
+
+def load_projection_profile(model_path: Path, modules: List[Dict[str, Any]]) -> Tuple[ProjectionProfile, DenseConfig, Path]:
+    dense_cfg, dense_path = parse_dense_config(model_path, modules)
+    
+    modules_list = [
+        ProjectionModule(
+            type="linear",
+            in_features=dense_cfg.in_features,
+            out_features=dense_cfg.out_features,
+            bias=dense_cfg.bias
+        )
+    ]
+    
+    projection_profile = ProjectionProfile(
+        kind="dense",
+        input_dim=dense_cfg.in_features,
+        output_dim=dense_cfg.out_features,
+        modules=modules_list,
+        normalize_after=True
+    )
+    
+    return projection_profile, dense_cfg, dense_path
+
+
+def build_colbert_profile(
+    source_model_id: str,
+    source_revision: str,
+    backbone_family: str,
+    similarity_fn: str,
+    tokenizer_profile: TokenizerProfile,
+    query_profile: QueryProfile,
+    doc_profile: DocumentProfile,
+    projection_profile: ProjectionProfile,
+    known_limitations: List[str]
+) -> ColbertProfile:
+    compatibility = CompatibilityProfile(
+        llama_cpp_loadable=True,
+        requires_profile=True,
+        strict_pylate_profile=True,
+        known_limitations=known_limitations
+    )
+    
+    profile = ColbertProfile(
+        schema="pg_colbert_profile_v1",
+        source_model_id=source_model_id,
+        source_revision=source_revision,
+        converter_version=CONVERTER_VERSION,
+        backbone_family=backbone_family,
+        colbert_family="pylate",
+        similarity=similarity_fn,
+        output_dim=projection_profile.output_dim,
+        normalize=True,
+        tokenizer=tokenizer_profile,
+        query=query_profile,
+        document=doc_profile,
+        projection=projection_profile,
+        compatibility=compatibility
+    )
+    return profile
 
 
 def generate_tensor_map(backbone_model_type: str, safetensors_keys: List[str], num_layers: int) -> Dict[str, Any]:
@@ -420,11 +585,28 @@ def main() -> None:
     # 2. Parse configurations
     try:
         modules = load_modules_json(model_path)
-        dense_cfg, dense_path = parse_dense_config(model_path, modules)
         backbone_cfg = parse_backbone_config(model_path)
-        tokenizer_info = load_tokenizer_info(model_path)
+        st_config = load_sentence_transformers_config(model_path)
+        tokenizer_profile, tokenizer, tokenizer_info = load_tokenizer_profile(model_path, st_config)
+        query_profile, doc_profile, limitations = load_query_document_profile(model_path, tokenizer, st_config)
+        projection_profile, dense_cfg, dense_path = load_projection_profile(model_path, modules)
+        
+        # Build the final ColbertProfile
+        profile = build_colbert_profile(
+            source_model_id=args.model_id or model_path.name,
+            source_revision=args.revision,
+            backbone_family=backbone_cfg.model_type,
+            similarity_fn=st_config.get("similarity_fn_name") or st_config.get("similarity") or "cosine",
+            tokenizer_profile=tokenizer_profile,
+            query_profile=query_profile,
+            doc_profile=doc_profile,
+            projection_profile=projection_profile,
+            known_limitations=limitations
+        )
     except Exception as e:
-        logger.error(f"Config parsing failed: {e}")
+        logger.error(f"Config parsing and profiling failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
     # Check validation requirements
@@ -497,55 +679,15 @@ def main() -> None:
         except Exception:
             pass
 
-    # Read similarity function name and other params from config_sentence_transformers.json if available
-    similarity_fn = "cosine"
-    query_prefix = tokenizer_info["query_prefix"]
-    doc_prefix = tokenizer_info["document_prefix"]
-    query_length = 32
-    doc_length = 256
-    attend_to_expansion = True
-    do_query_expansion = True
-    skiplist_words = []
-
-    st_cfg_path = model_path / "config_sentence_transformers.json"
-    if st_cfg_path.exists():
-        try:
-            with open(st_cfg_path, "r", encoding="utf-8") as f:
-                st_cfg = json.load(f)
-                if isinstance(st_cfg, dict):
-                    fn = st_cfg.get("similarity_fn_name") or st_cfg.get("similarity")
-                    if fn:
-                        similarity_fn = fn
-                    
-                    q_prefix = st_cfg.get("query_prefix")
-                    if q_prefix is not None:
-                        query_prefix = q_prefix
-                        
-                    d_prefix = st_cfg.get("document_prefix")
-                    if d_prefix is not None:
-                        doc_prefix = d_prefix
-                        
-                    q_len = st_cfg.get("query_length")
-                    if q_len is not None:
-                        query_length = int(q_len)
-                        
-                    d_len = st_cfg.get("document_length")
-                    if d_len is not None:
-                        doc_length = int(d_len)
-                        
-                    att_to_exp = st_cfg.get("attend_to_expansion_tokens")
-                    if att_to_exp is not None:
-                        attend_to_expansion = bool(att_to_exp)
-                        
-                    do_q_exp = st_cfg.get("do_query_expansion")
-                    if do_q_exp is not None:
-                        do_query_expansion = bool(do_q_exp)
-                        
-                    skip_words = st_cfg.get("skiplist_words")
-                    if skip_words is not None:
-                        skiplist_words = list(skip_words)
-        except Exception as e:
-            logger.warning(f"Failed to parse config_sentence_transformers.json: {e}")
+    # Extract configuration variables from profile for GGUF metadata
+    similarity_fn = profile.similarity
+    query_prefix = profile.query.prefix
+    doc_prefix = profile.document.prefix
+    query_length = profile.query.max_length
+    doc_length = profile.document.max_length
+    attend_to_expansion = profile.query.attend_to_expansion_tokens
+    do_query_expansion = profile.query.pad_to is not None
+    skiplist_words = profile.document.skiplist_words
 
     # Build the canonical tensor map JSON
     all_backbone_keys = list(backbone_tensor_meta.keys())
@@ -563,6 +705,23 @@ def main() -> None:
     logger.info(f"  Doc Prefix:          '{tokenizer_info['document_prefix']}' -> {tokenizer_info['document_prefix_ids']}")
 
     if args.dry_run or args.dump_tensors:
+        if args.dry_run:
+            logger.info("=== ColBERT Profile Summary ===")
+            logger.info(f"  Schema:          {profile.schema}")
+            logger.info(f"  Source Model:    {profile.source_model_id}")
+            logger.info(f"  Backbone Family: {profile.backbone_family}")
+            logger.info(f"  Similarity:      {profile.similarity}")
+            logger.info(f"  Output Dim:      {profile.output_dim}")
+            logger.info(f"  Query Prefix:    '{profile.query.prefix}'")
+            logger.info(f"  Query Pad To:    {profile.query.pad_to}")
+            logger.info(f"  Doc Prefix:      '{profile.document.prefix}'")
+            logger.info(f"  Doc Max Length:  {profile.document.max_length}")
+            logger.info(f"  Skiplist Words:  {len(profile.document.skiplist_words)} characters")
+            logger.info(f"  Skiplist Token IDs: {profile.document.skiplist_token_ids}")
+            logger.info(f"  Projection Kind: {profile.projection.kind}")
+            if profile.compatibility.known_limitations:
+                logger.warning(f"  Limitations:     {profile.compatibility.known_limitations}")
+        
         if args.dump_tensors:
             print("\n=== Backbone Tensors ===")
             for k, shape in backbone_tensor_meta.items():
@@ -585,6 +744,7 @@ def main() -> None:
 
     # Schema & general metadata
     writer.add_string("pg_colbert.gguf_schema", args.schema)
+    writer.add_string("pg_colbert.profile_json", profile.to_json())
     writer.add_string("general.name", backbone_cfg.raw_config.get("name") or args.model_id or model_path.name)
     writer.add_string("general.basename", args.model_id or model_path.name)
     writer.add_string("general.architecture", backbone_cfg.model_type)
@@ -738,6 +898,14 @@ def main() -> None:
     writer.close()
     
     logger.info(f"Successfully converted model to: {outfile_path.resolve()}")
+
+    # 6. Write sidecar profile
+    if args.write_profile_sidecar:
+        try:
+            sidecar_path = write_profile_sidecar(profile, outfile_path)
+            logger.info(f"Successfully wrote sidecar profile to: {sidecar_path.resolve()}")
+        except Exception as e:
+            logger.error(f"Failed to write sidecar profile: {e}")
 
 
 if __name__ == "__main__":

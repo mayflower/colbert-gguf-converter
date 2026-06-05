@@ -13,7 +13,11 @@ from tools.convert_colbert_hf_to_gguf import (
     load_modules_json,
     parse_dense_config,
     parse_backbone_config,
-    load_tokenizer_info,
+    load_sentence_transformers_config,
+    load_tokenizer_profile,
+    load_query_document_profile,
+    load_projection_profile,
+    build_colbert_profile,
     generate_tensor_map
 )
 
@@ -39,15 +43,43 @@ def test_config_parsing(fake_colbert_model_dir):
     assert backbone_cfg.intermediate_size == 512
     assert backbone_cfg.num_hidden_layers == 2
     
-    tok_info = load_tokenizer_info(fake_colbert_model_dir)
+    st_config = load_sentence_transformers_config(fake_colbert_model_dir)
+    assert st_config.get("query_prefix") == "[Q] "
+    
+    tokenizer_prof, tokenizer, tok_info = load_tokenizer_profile(fake_colbert_model_dir, st_config)
     assert tok_info["pad_token_id"] == 0
     assert tok_info["cls_token_id"] == 2
     assert tok_info["sep_token_id"] == 3
     # Check prefixes
     assert tok_info["query_prefix"] == "[Q] "
     assert tok_info["document_prefix"] == "[D] "
-    # tokenizer encode results should not crash
     assert isinstance(tok_info["query_prefix_ids"], list)
+
+    query_prof, doc_prof, limitations = load_query_document_profile(fake_colbert_model_dir, tokenizer, st_config)
+    assert query_prof.prefix == "[Q] "
+    assert query_prof.max_length == 32
+    assert doc_prof.prefix == "[D] "
+    assert doc_prof.max_length == 300
+    assert len(doc_prof.skiplist_words) == 3
+    assert len(doc_prof.skiplist_token_ids) == 3
+
+    proj_prof, dense_cfg, dense_path = load_projection_profile(fake_colbert_model_dir, modules)
+    assert proj_prof.input_dim == 256
+    assert proj_prof.output_dim == 128
+    
+    profile = build_colbert_profile(
+        source_model_id="test-model",
+        source_revision="main",
+        backbone_family="modernbert",
+        similarity_fn="cosine",
+        tokenizer_profile=tokenizer_prof,
+        query_profile=query_prof,
+        doc_profile=doc_prof,
+        projection_profile=proj_prof,
+        known_limitations=limitations
+    )
+    from tools.colbert_profile import validate_profile
+    validate_profile(profile)
 
 
 def test_gguf_writing(fake_colbert_model_dir):
@@ -123,3 +155,18 @@ def test_gguf_writing(fake_colbert_model_dir):
     proj_tensor = next(t for t in reader.tensors if t.name == "colbert.proj.weight")
     # GGUF tensor shape is stored in reverse order or standard order. Let's check dimensions.
     assert list(proj_tensor.shape) == [256, 128] # gguf-py shapes are stored transposed (column-major style: width, height)
+
+    # Verify profile is embedded in GGUF
+    profile_json_val = decode_field(reader.fields.get("pg_colbert.profile_json"))
+    assert profile_json_val is not None
+    profile_data = json.loads(profile_json_val)
+    assert profile_data["schema"] == "pg_colbert_profile_v1"
+    assert profile_data["output_dim"] == 128
+    
+    # Verify sidecar profile file was created
+    sidecar_file = fake_colbert_model_dir / "model.gguf.colbert_profile.json"
+    assert sidecar_file.exists()
+    with open(sidecar_file, "r", encoding="utf-8") as f:
+        sidecar_data = json.load(f)
+    assert sidecar_data["schema"] == "pg_colbert_profile_v1"
+    assert sidecar_data["projection"]["input_dim"] == 256
