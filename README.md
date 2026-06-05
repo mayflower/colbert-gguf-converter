@@ -44,8 +44,18 @@ python tools/convert_colbert_hf_to_gguf.py \
 **Common Options**:
 * `--model-dir /path/to/local/model`: Use a local directory instead of downloading from the Hub.
 * `--outtype f32|f16`: Export weights in Float32 or Float16 precision (default is `f16`).
+* `--target-runtime pg_colbert|llama_cpp|both`: Target GGUF format layout (default: `pg_colbert` for backwards compatibility).
 * `--dry-run`: Parse configs and validate shape compatibility without writing GGUF weights.
 * `--allow-shape-mismatch`: Bypass verification checks matching the dense projection features with the backbone hidden size.
+
+### Target Runtimes
+
+The converter supports exporting to multiple target formats:
+
+1. **`pg_colbert`** (Default): Generates a custom `pg_colbert_v1` GGUF where backbone tensors are prefixed with `hf.` and mapped dynamically via `pg_colbert.tensor_map_json`.
+2. **`llama_cpp`**: Generates a model that is **llama.cpp-loadable for supported BERT/ModernBERT ColBERT backbones**. This maps backbone tensors to standard `llama.cpp` names, embeds `tokenizer.ggml.*` keys, embeds `pg_colbert.profile_json`, and keeps the ColBERT projection tensors (`colbert.proj.weight`/`bias`) in GGUF.
+3. **`both`**: Simultaneously writes both `<outfile>.pg_colbert.gguf` and `<outfile>.llama.gguf` and their matching profile sidecars side-by-side.
+
 
 ### 2. Inspecting the GGUF Model
 

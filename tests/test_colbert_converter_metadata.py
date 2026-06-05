@@ -192,3 +192,117 @@ def test_gguf_writing(fake_colbert_model_dir):
     assert "projection kind/modules: kind=dense, modules=[linear(256 -> 128, bias=False)]" in output
     assert "compatibility flags: llama_cpp_loadable=True, requires_profile=True, strict_pylate_profile=True" in output
 
+
+def test_gguf_writing_llama_cpp(fake_colbert_model_dir):
+    """Test target-runtime llama_cpp conversion to GGUF and verify metadata and tensors."""
+    import subprocess
+    import sys
+    
+    outfile = fake_colbert_model_dir / "model_llama.gguf"
+    
+    cmd = [
+        sys.executable,
+        str(Path(__file__).parent.parent / "tools/convert_colbert_hf_to_gguf.py"),
+        "--model-dir", str(fake_colbert_model_dir),
+        "--outfile", str(outfile),
+        "--outtype", "f32",
+        "--target-runtime", "llama_cpp",
+        "--verbose"
+    ]
+    
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"Converter failed: {res.stderr}\nOutput: {res.stdout}"
+    
+    # Verify the generated GGUF file
+    assert outfile.exists()
+    reader = GGUFReader(outfile)
+    
+    def decode_field(field):
+        if field is None:
+            return None
+        main_type = field.types[0]
+        type_name = getattr(main_type, "name", str(main_type))
+        if type_name == "ARRAY" or main_type == 9:
+            sub_type = field.types[1] if len(field.types) > 1 else None
+            sub_type_name = getattr(sub_type, "name", str(sub_type)) if sub_type else ""
+            arr_val = []
+            for idx in field.data:
+                part = field.parts[idx]
+                if sub_type_name == "STRING" or sub_type == 8:
+                    arr_val.append(bytes(part).decode("utf-8"))
+                else:
+                    arr_val.append(part.item() if hasattr(part, "item") else part[0])
+            return arr_val
+        elif type_name == "STRING" or main_type == 8:
+            return bytes(field.parts[field.data[0]]).decode("utf-8")
+        else:
+            part = field.parts[field.data[0]]
+            return part.item() if hasattr(part, "item") else part[0]
+
+    # Verify standard llama.cpp metadata is present
+    assert decode_field(reader.fields.get("general.architecture")) == "modernbert"
+    
+    # Verify tokenizer.ggml.* metadata
+    assert decode_field(reader.fields.get("tokenizer.ggml.model")) == "bert"
+    tokens = decode_field(reader.fields.get("tokenizer.ggml.tokens"))
+    assert tokens is not None
+    assert len(tokens) > 0
+    assert "[PAD]" in tokens
+    assert "[Q]" in tokens
+    assert "[D]" in tokens
+    
+    token_types = decode_field(reader.fields.get("tokenizer.ggml.token_type"))
+    assert token_types is not None
+    assert len(token_types) == len(tokens)
+    
+    # Verify pg_colbert.profile_json is embedded
+    profile_json_val = decode_field(reader.fields.get("pg_colbert.profile_json"))
+    assert profile_json_val is not None
+    profile_data = json.loads(profile_json_val)
+    assert profile_data["schema"] == "pg_colbert_profile_v1"
+    
+    # Verify tensor names are canonical llama.cpp names
+    tensor_names = [t.name for t in reader.tensors]
+    assert "token_embd.weight" in tensor_names
+    assert "blk.0.attn_qkv.weight" in tensor_names
+    assert "colbert.proj.weight" in tensor_names
+    
+    # Verify sidecar profile file was created
+    sidecar_file = fake_colbert_model_dir / "model_llama.gguf.colbert_profile.json"
+    assert sidecar_file.exists()
+
+
+def test_gguf_writing_both(fake_colbert_model_dir):
+    """Test target-runtime both conversion to GGUF and verify both output files exist."""
+    import subprocess
+    import sys
+    
+    outfile = fake_colbert_model_dir / "model_both.gguf"
+    
+    cmd = [
+        sys.executable,
+        str(Path(__file__).parent.parent / "tools/convert_colbert_hf_to_gguf.py"),
+        "--model-dir", str(fake_colbert_model_dir),
+        "--outfile", str(outfile),
+        "--outtype", "f32",
+        "--target-runtime", "both",
+        "--verbose"
+    ]
+    
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"Converter failed: {res.stderr}\nOutput: {res.stdout}"
+    
+    # Verify both output GGUF files and sidecars exist
+    pg_colbert_file = fake_colbert_model_dir / "model_both.pg_colbert.gguf"
+    llama_file = fake_colbert_model_dir / "model_both.llama.gguf"
+    
+    assert pg_colbert_file.exists()
+    assert llama_file.exists()
+    
+    pg_sidecar = fake_colbert_model_dir / "model_both.pg_colbert.gguf.colbert_profile.json"
+    llama_sidecar = fake_colbert_model_dir / "model_both.llama.gguf.colbert_profile.json"
+    
+    assert pg_sidecar.exists()
+    assert llama_sidecar.exists()
+
+

@@ -36,7 +36,8 @@ from colbert_profile import (
     ProjectionModule,
     CompatibilityProfile,
     validate_profile,
-    write_profile_sidecar
+    write_profile_sidecar,
+    canonicalize_tensor_name
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -79,6 +80,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=str, default=None, help="Cache directory for Hugging Face downloads")
     parser.add_argument("--revision", type=str, default="main", help="Git revision/branch name")
     parser.add_argument("--schema", type=str, default="pg_colbert_v1", help="Target GGUF schema (default: pg_colbert_v1)")
+    parser.add_argument("--target-runtime", type=str, choices=["pg_colbert", "llama_cpp", "both"], default="pg_colbert",
+                        help="Target GGUF runtime format: pg_colbert, llama_cpp, or both (default: pg_colbert)")
+
     parser.add_argument("--dry-run", action="store_true", help="Parse configs and validate shapes, do not write GGUF")
     parser.add_argument("--dump-tensors", action="store_true", help="Dump list of tensors to be written")
     parser.add_argument("--no-download", action="store_true", help="Do not download model if model-id is not cached")
@@ -734,83 +738,172 @@ def main() -> None:
         logger.info("Dry-run complete. Exiting without writing GGUF.")
         return
 
+    target_runtime = args.target_runtime
+
+    if target_runtime == "both":
+        outfile_path = Path(args.outfile)
+        if outfile_path.suffix == ".gguf":
+            pg_colbert_outfile = outfile_path.with_name(outfile_path.stem + ".pg_colbert.gguf")
+            llama_outfile = outfile_path.with_name(outfile_path.stem + ".llama.gguf")
+        else:
+            pg_colbert_outfile = Path(str(outfile_path) + ".pg_colbert.gguf")
+            llama_outfile = Path(str(outfile_path) + ".llama.gguf")
+
+        convert_model_to_gguf(
+            outfile_path=pg_colbert_outfile,
+            target_runtime="pg_colbert",
+            backbone_cfg=backbone_cfg,
+            profile=profile,
+            model_id=args.model_id or model_path.name,
+            model_path=model_path,
+            revision=args.revision,
+            license_str=license_str,
+            tokenizer=tokenizer,
+            tokenizer_info=tokenizer_info,
+            st_config=st_config,
+            dense_cfg=dense_cfg,
+            proj_in_features=proj_in_features,
+            similarity_fn=similarity_fn,
+            query_prefix=query_prefix,
+            doc_prefix=doc_prefix,
+            query_length=query_length,
+            doc_length=doc_length,
+            attend_to_expansion=attend_to_expansion,
+            do_query_expansion=do_query_expansion,
+            skiplist_words=skiplist_words,
+            tensor_map_json_str=tensor_map_json_str,
+            backbone_safetensors=backbone_safetensors,
+            dense_safetensors=dense_safetensors,
+            outtype=args.outtype,
+            schema=args.schema,
+            write_profile_sidecar_flag=args.write_profile_sidecar
+        )
+
+        convert_model_to_gguf(
+            outfile_path=llama_outfile,
+            target_runtime="llama_cpp",
+            backbone_cfg=backbone_cfg,
+            profile=profile,
+            model_id=args.model_id or model_path.name,
+            model_path=model_path,
+            revision=args.revision,
+            license_str=license_str,
+            tokenizer=tokenizer,
+            tokenizer_info=tokenizer_info,
+            st_config=st_config,
+            dense_cfg=dense_cfg,
+            proj_in_features=proj_in_features,
+            similarity_fn=similarity_fn,
+            query_prefix=query_prefix,
+            doc_prefix=doc_prefix,
+            query_length=query_length,
+            doc_length=doc_length,
+            attend_to_expansion=attend_to_expansion,
+            do_query_expansion=do_query_expansion,
+            skiplist_words=skiplist_words,
+            tensor_map_json_str=tensor_map_json_str,
+            backbone_safetensors=backbone_safetensors,
+            dense_safetensors=dense_safetensors,
+            outtype=args.outtype,
+            schema=args.schema,
+            write_profile_sidecar_flag=args.write_profile_sidecar
+        )
+    else:
+        convert_model_to_gguf(
+            outfile_path=Path(args.outfile),
+            target_runtime=target_runtime,
+            backbone_cfg=backbone_cfg,
+            profile=profile,
+            model_id=args.model_id or model_path.name,
+            model_path=model_path,
+            revision=args.revision,
+            license_str=license_str,
+            tokenizer=tokenizer,
+            tokenizer_info=tokenizer_info,
+            st_config=st_config,
+            dense_cfg=dense_cfg,
+            proj_in_features=proj_in_features,
+            similarity_fn=similarity_fn,
+            query_prefix=query_prefix,
+            doc_prefix=doc_prefix,
+            query_length=query_length,
+            doc_length=doc_length,
+            attend_to_expansion=attend_to_expansion,
+            do_query_expansion=do_query_expansion,
+            skiplist_words=skiplist_words,
+            tensor_map_json_str=tensor_map_json_str,
+            backbone_safetensors=backbone_safetensors,
+            dense_safetensors=dense_safetensors,
+            outtype=args.outtype,
+            schema=args.schema,
+            write_profile_sidecar_flag=args.write_profile_sidecar
+        )
+
+
+def convert_model_to_gguf(
+    outfile_path: Path,
+    target_runtime: str,
+    backbone_cfg: BackboneConfig,
+    profile: ColbertProfile,
+    model_id: Optional[str],
+    model_path: Path,
+    revision: str,
+    license_str: str,
+    tokenizer: AutoTokenizer,
+    tokenizer_info: Dict[str, Any],
+    st_config: Dict[str, Any],
+    dense_cfg: DenseConfig,
+    proj_in_features: int,
+    similarity_fn: str,
+    query_prefix: str,
+    doc_prefix: str,
+    query_length: int,
+    doc_length: int,
+    attend_to_expansion: bool,
+    do_query_expansion: bool,
+    skiplist_words: List[str],
+    tensor_map_json_str: str,
+    backbone_safetensors: List[Path],
+    dense_safetensors: List[Path],
+    outtype: str,
+    schema: str,
+    write_profile_sidecar_flag: bool
+) -> None:
     # 3. Write GGUF File
-    outfile_path = Path(args.outfile)
     outfile_path.parent.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Creating GGUF model: {outfile_path}")
-    # Initialize GGUFWriter with architecture type
+    logger.info(f"Creating GGUF model ({target_runtime}): {outfile_path}")
     writer = GGUFWriter(path=str(outfile_path), arch=backbone_cfg.model_type)
 
-    # Schema & general metadata
-    writer.add_string("pg_colbert.gguf_schema", args.schema)
+    # Embed pg_colbert.profile_json in BOTH runtimes
     writer.add_string("pg_colbert.profile_json", profile.to_json())
-    writer.add_string("general.name", backbone_cfg.raw_config.get("name") or args.model_id or model_path.name)
-    writer.add_string("general.basename", args.model_id or model_path.name)
+
+    # Common general metadata
+    writer.add_string("general.name", backbone_cfg.raw_config.get("name") or model_id or model_path.name)
+    writer.add_string("general.basename", model_id or model_path.name)
     writer.add_string("general.architecture", backbone_cfg.model_type)
     
-    ft_code = 1 if args.outtype == "f16" else 0  # 1 for F16, 0 for F32
+    ft_code = 1 if outtype == "f16" else 0  # 1 for F16, 0 for F32
     writer.add_uint32("general.file_type", ft_code)
     
-    if args.model_id:
-        writer.add_string("general.source.huggingface.repo_id", args.model_id)
-    writer.add_string("general.source.huggingface.revision", args.revision)
+    if model_id:
+        writer.add_string("general.source.huggingface.repo_id", model_id)
+    writer.add_string("general.source.huggingface.revision", revision)
     writer.add_string("general.license", license_str)
     
-    # Converter provenance
+    # Common converter provenance
     writer.add_string("pg_colbert.converter.version", CONVERTER_VERSION)
     writer.add_string("pg_colbert.converter.command", " ".join(sys.argv))
-    writer.add_string("pg_colbert.tensor_map_json", tensor_map_json_str)
 
-    # ColBERT Config Metadata
-    writer.add_string("colbert.model_type", backbone_cfg.model_type)
-    writer.add_string("colbert.backbone_model_type", backbone_cfg.model_type)
-    writer.add_uint32("colbert.embedding_dim", dense_cfg.out_features)
-    writer.add_uint32("colbert.projection.in_features", proj_in_features)
-    writer.add_uint32("colbert.projection.out_features", dense_cfg.out_features)
-    writer.add_bool("colbert.projection.bias", dense_cfg.bias)
-    writer.add_string("colbert.similarity_fn_name", similarity_fn)
-    writer.add_string("colbert.query_prefix", query_prefix)
-    writer.add_string("colbert.document_prefix", doc_prefix)
-    writer.add_uint32("colbert.query_length", query_length)
-    writer.add_uint32("colbert.document_length", doc_length)
-    writer.add_bool("colbert.attend_to_expansion_tokens", attend_to_expansion)
-    writer.add_bool("colbert.do_query_expansion", do_query_expansion)
-    writer.add_array("colbert.skiplist_words", skiplist_words)
-
-    # resolved special token IDs
-    if tokenizer_info["q_token_id"] is not None:
-        writer.add_uint32("colbert.q_token_id", tokenizer_info["q_token_id"])
-    if tokenizer_info["d_token_id"] is not None:
-        writer.add_uint32("colbert.d_token_id", tokenizer_info["d_token_id"])
-    if tokenizer_info["pad_token_id"] is not None:
-        writer.add_uint32("colbert.pad_token_id", tokenizer_info["pad_token_id"])
-    if tokenizer_info["cls_token_id"] is not None:
-        writer.add_uint32("colbert.cls_token_id", tokenizer_info["cls_token_id"])
-    if tokenizer_info["sep_token_id"] is not None:
-        writer.add_uint32("colbert.sep_token_id", tokenizer_info["sep_token_id"])
-    if tokenizer_info["bos_token_id"] is not None:
-        writer.add_uint32("colbert.bos_token_id", tokenizer_info["bos_token_id"])
-    if tokenizer_info["eos_token_id"] is not None:
-        writer.add_uint32("colbert.eos_token_id", tokenizer_info["eos_token_id"])
-    
-    if tokenizer_info["query_prefix_ids"]:
-        writer.add_array("colbert.query_prefix_token_ids", tokenizer_info["query_prefix_ids"])
-    if tokenizer_info["document_prefix_ids"]:
-        writer.add_array("colbert.document_prefix_token_ids", tokenizer_info["document_prefix_ids"])
-
-    # Backbone specific metadata
+    # Architecture specific metadata (common to both)
     arch_prefix = f"{backbone_cfg.model_type}."
-    
     if backbone_cfg.model_type == "modernbert":
-        # Add ModernBERT variables
         writer.add_uint32(f"{arch_prefix}hidden_size", backbone_cfg.hidden_size)
         writer.add_uint32(f"{arch_prefix}intermediate_size", backbone_cfg.intermediate_size)
         writer.add_uint32(f"{arch_prefix}num_hidden_layers", backbone_cfg.num_hidden_layers)
         writer.add_uint32(f"{arch_prefix}num_attention_heads", backbone_cfg.num_attention_heads)
         writer.add_uint32(f"{arch_prefix}max_position_embeddings", backbone_cfg.max_position_embeddings)
         
-        # RoPE, local attn, etc.
         local_attn = backbone_cfg.raw_config.get("local_attention") or 128
         writer.add_uint32(f"{arch_prefix}local_attention", local_attn)
         global_attn_every_n = backbone_cfg.raw_config.get("global_attn_every_n_layers") or 3
@@ -830,7 +923,6 @@ def main() -> None:
         writer.add_bool(f"{arch_prefix}norm_bias", backbone_cfg.raw_config.get("norm_bias", False))
         
     elif backbone_cfg.model_type == "bert":
-        # Add BERT variables
         writer.add_uint32(f"{arch_prefix}hidden_size", backbone_cfg.hidden_size)
         writer.add_uint32(f"{arch_prefix}intermediate_size", backbone_cfg.intermediate_size)
         writer.add_uint32(f"{arch_prefix}num_hidden_layers", backbone_cfg.num_hidden_layers)
@@ -840,40 +932,156 @@ def main() -> None:
         writer.add_float32(f"{arch_prefix}layer_norm_eps", backbone_cfg.layer_norm_eps)
         writer.add_uint32(f"{arch_prefix}type_vocab_size", backbone_cfg.raw_config.get("type_vocab_size", 2))
 
-    # Tokenizer files embedded as string metadata
-    writer.add_string("tokenizer.huggingface.json", tokenizer_info["tokenizer_json"])
-    if tokenizer_info["tokenizer_config"]:
-        writer.add_string("tokenizer.config.json", tokenizer_info["tokenizer_config"])
-    if tokenizer_info["special_tokens_map"]:
-        writer.add_string("tokenizer.special_tokens_map.json", tokenizer_info["special_tokens_map"])
+    # Runtime-specific metadata
+    if target_runtime == "pg_colbert":
+        writer.add_string("pg_colbert.gguf_schema", schema)
+        writer.add_string("pg_colbert.tensor_map_json", tensor_map_json_str)
+
+        # ColBERT Config Metadata
+        writer.add_string("colbert.model_type", backbone_cfg.model_type)
+        writer.add_string("colbert.backbone_model_type", backbone_cfg.model_type)
+        writer.add_uint32("colbert.embedding_dim", dense_cfg.out_features)
+        writer.add_uint32("colbert.projection.in_features", proj_in_features)
+        writer.add_uint32("colbert.projection.out_features", dense_cfg.out_features)
+        writer.add_bool("colbert.projection.bias", dense_cfg.bias)
+        writer.add_string("colbert.similarity_fn_name", similarity_fn)
+        writer.add_string("colbert.query_prefix", query_prefix)
+        writer.add_string("colbert.document_prefix", doc_prefix)
+        writer.add_uint32("colbert.query_length", query_length)
+        writer.add_uint32("colbert.document_length", doc_length)
+        writer.add_bool("colbert.attend_to_expansion_tokens", attend_to_expansion)
+        writer.add_bool("colbert.do_query_expansion", do_query_expansion)
+        writer.add_array("colbert.skiplist_words", skiplist_words)
+
+        # resolved special token IDs
+        if tokenizer_info["q_token_id"] is not None:
+            writer.add_uint32("colbert.q_token_id", tokenizer_info["q_token_id"])
+        if tokenizer_info["d_token_id"] is not None:
+            writer.add_uint32("colbert.d_token_id", tokenizer_info["d_token_id"])
+        if tokenizer_info["pad_token_id"] is not None:
+            writer.add_uint32("colbert.pad_token_id", tokenizer_info["pad_token_id"])
+        if tokenizer_info["cls_token_id"] is not None:
+            writer.add_uint32("colbert.cls_token_id", tokenizer_info["cls_token_id"])
+        if tokenizer_info["sep_token_id"] is not None:
+            writer.add_uint32("colbert.sep_token_id", tokenizer_info["sep_token_id"])
+        if tokenizer_info["bos_token_id"] is not None:
+            writer.add_uint32("colbert.bos_token_id", tokenizer_info["bos_token_id"])
+        if tokenizer_info["eos_token_id"] is not None:
+            writer.add_uint32("colbert.eos_token_id", tokenizer_info["eos_token_id"])
+        
+        if tokenizer_info["query_prefix_ids"]:
+            writer.add_array("colbert.query_prefix_token_ids", tokenizer_info["query_prefix_ids"])
+        if tokenizer_info["document_prefix_ids"]:
+            writer.add_array("colbert.document_prefix_token_ids", tokenizer_info["document_prefix_ids"])
+
+        # Tokenizer files embedded as string metadata
+        writer.add_string("tokenizer.huggingface.json", tokenizer_info["tokenizer_json"])
+        if tokenizer_info["tokenizer_config"]:
+            writer.add_string("tokenizer.config.json", tokenizer_info["tokenizer_config"])
+        if tokenizer_info["special_tokens_map"]:
+            writer.add_string("tokenizer.special_tokens_map.json", tokenizer_info["special_tokens_map"])
+
+    elif target_runtime == "llama_cpp":
+        # Extract tokens list
+        try:
+            vocab = tokenizer.get_vocab()
+            if not vocab:
+                raise ValueError("Empty vocabulary")
+            
+            max_id = max(vocab.values())
+            tokens = [None] * (max_id + 1)
+            for token, token_id in vocab.items():
+                tokens[token_id] = token
+            # Fill any None
+            for i in range(len(tokens)):
+                if tokens[i] is None:
+                    tokens[i] = tokenizer.unk_token or "[UNK]"
+                    
+            token_types = []
+            special_ids = set(tokenizer.all_special_ids)
+            for i in range(len(tokens)):
+                if i in special_ids:
+                    token_types.append(3) # Control
+                else:
+                    token_types.append(1) # Normal
+        except Exception as e:
+            raise ValueError(f"Failed to extract tokenizer tokens for llama_cpp runtime: {e}")
+            
+        writer.add_string("tokenizer.ggml.model", "bert")
+        writer.add_array("tokenizer.ggml.tokens", tokens)
+        writer.add_array("tokenizer.ggml.scores", [0.0] * len(tokens))
+        writer.add_array("tokenizer.ggml.token_type", token_types)
+        
+        # resolved special token IDs
+        if tokenizer.bos_token_id is not None:
+            writer.add_uint32("tokenizer.ggml.bos_token_id", tokenizer.bos_token_id)
+        if tokenizer.eos_token_id is not None:
+            writer.add_uint32("tokenizer.ggml.eos_token_id", tokenizer.eos_token_id)
+        if tokenizer.pad_token_id is not None:
+            writer.add_uint32("tokenizer.ggml.pad_token_id", tokenizer.pad_token_id)
+        if tokenizer.cls_token_id is not None:
+            writer.add_uint32("tokenizer.ggml.cls_token_id", tokenizer.cls_token_id)
+        if tokenizer.sep_token_id is not None:
+            writer.add_uint32("tokenizer.ggml.sep_token_id", tokenizer.sep_token_id)
 
     # Define a float-conversion helper to support float16 outtype
-    def process_tensor(tensor: torch.Tensor, name: str) -> np.ndarray:
-        # Convert to numpy array, handling BF16 safely
+    def process_tensor(tensor: torch.Tensor) -> np.ndarray:
         if tensor.dtype == torch.bfloat16:
-            # numpy doesn't support bfloat16 directly, cast to f32 first
             arr = tensor.to(torch.float32).detach().cpu().numpy()
         else:
             arr = tensor.detach().cpu().numpy()
             
-        # Downcast floats to f16 if specified
-        if args.outtype == "f16" and arr.dtype in (np.float32, np.float64):
+        if outtype == "f16" and arr.dtype in (np.float32, np.float64):
             arr = arr.astype(np.float16)
-        elif args.outtype == "f32" and arr.dtype in (np.float32, np.float64, np.float16):
+        elif outtype == "f32" and arr.dtype in (np.float32, np.float64, np.float16):
             arr = arr.astype(np.float32)
             
         return arr
 
-    # 4. Write Tensors
     # A. Write Backbone Tensors
     for sf in backbone_safetensors:
         logger.info(f"Writing backbone tensors from {sf.name}...")
         with safe_open(sf, framework="pt", device="cpu") as f:
             for key in sorted(f.keys()):
                 tensor = f.get_tensor(key)
-                arr = process_tensor(tensor, key)
-                stored_name = f"hf.{key}"
-                writer.add_tensor(stored_name, arr)
+                arr = process_tensor(tensor)
+                
+                if target_runtime == "llama_cpp":
+                    # Check for concatenated Wi gate/up projections
+                    clean_key = key
+                    if clean_key.startswith("model."):
+                        clean_key = clean_key[6:]
+                    elif clean_key.startswith("bert."):
+                        clean_key = clean_key[5:]
+                        
+                    import re
+                    layer_match = re.search(r"layers?\.(\d+)\.mlp\.Wi\.(weight|bias)", clean_key)
+                    if layer_match:
+                        layer_idx = int(layer_match.group(1))
+                        weight_or_bias = layer_match.group(2)
+                        
+                        if weight_or_bias == "weight":
+                            mid = arr.shape[0] // 2
+                            gate_data = arr[:mid, ...]
+                            up_data = arr[mid:, ...]
+                            writer.add_tensor(f"blk.{layer_idx}.ffn_gate.weight", gate_data)
+                            writer.add_tensor(f"blk.{layer_idx}.ffn_up.weight", up_data)
+                        else: # bias
+                            mid = arr.shape[0] // 2
+                            gate_data = arr[:mid]
+                            up_data = arr[mid:]
+                            writer.add_tensor(f"blk.{layer_idx}.ffn_gate.bias", gate_data)
+                            writer.add_tensor(f"blk.{layer_idx}.ffn_up.bias", up_data)
+                        continue
+                    
+                    stored_name = canonicalize_tensor_name(key, backbone_cfg.model_type)
+                    if stored_name is None:
+                        logger.warning(f"Could not canonicalize backbone tensor for llama.cpp: {key}. Skipping.")
+                        continue
+                    writer.add_tensor(stored_name, arr)
+                else:
+                    stored_name = f"hf.{key}"
+                    writer.add_tensor(stored_name, arr)
 
     # B. Write Dense Projection Tensors
     for sf in dense_safetensors:
@@ -881,7 +1089,8 @@ def main() -> None:
         with safe_open(sf, framework="pt", device="cpu") as f:
             for key in sorted(f.keys()):
                 tensor = f.get_tensor(key)
-                arr = process_tensor(tensor, key)
+                arr = process_tensor(tensor)
+                
                 if "weight" in key:
                     stored_name = "colbert.proj.weight"
                 elif "bias" in key:
@@ -900,12 +1109,13 @@ def main() -> None:
     logger.info(f"Successfully converted model to: {outfile_path.resolve()}")
 
     # 6. Write sidecar profile
-    if args.write_profile_sidecar:
+    if write_profile_sidecar_flag:
         try:
             sidecar_path = write_profile_sidecar(profile, outfile_path)
             logger.info(f"Successfully wrote sidecar profile to: {sidecar_path.resolve()}")
         except Exception as e:
             logger.error(f"Failed to write sidecar profile: {e}")
+
 
 
 if __name__ == "__main__":

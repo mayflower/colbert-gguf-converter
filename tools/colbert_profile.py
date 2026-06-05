@@ -179,3 +179,101 @@ def write_profile_sidecar(profile: ColbertProfile, gguf_path: Union[str, Path]) 
     with open(sidecar_path, "w", encoding="utf-8") as f:
         f.write(profile.to_json())
     return sidecar_path
+
+
+def get_llama_tensor_map(arch: str) -> Dict[str, str]:
+    """Map pg_colbert hf-prefixed tensor suffix to standard llama.cpp names."""
+    if arch == "modernbert":
+        return {
+            "embeddings.tok_embeddings.weight": "token_embd.weight",
+            "embeddings.norm.weight": "token_embd_norm.weight",  # ModernBERT input LayerNorm
+            "embeddings.norm.bias": "token_embd_norm.bias",
+            
+            # Layer templates (will be processed per block index)
+            "attn.Wqkv.weight": "attn_qkv.weight",
+            "attn.Wqkv.bias": "attn_qkv.bias",
+            "attn.out_proj.weight": "attn_out.weight",
+            "attn.out_proj.bias": "attn_out.bias",
+            "attn.Wo.weight": "attn_out.weight",
+            "attn.Wo.bias": "attn_out.bias",
+            "attn.norm.weight": "attn_norm.weight",
+            "attn.norm.bias": "attn_norm.bias",
+            "attn_norm.weight": "attn_norm.weight",
+            "attn_norm.bias": "attn_norm.bias",
+            
+            "mlp.wi_0.weight": "ffn_gate.weight",  # wi_0 is gate projection
+            "mlp.wi_0.bias": "ffn_gate.bias",
+            "mlp.wi_1.weight": "ffn_up.weight",    # wi_1 is up projection
+            "mlp.wi_1.bias": "ffn_up.bias",
+            "mlp.wo.weight": "ffn_down.weight",    # wo is down projection
+            "mlp.wo.bias": "ffn_down.bias",
+            "mlp.Wo.weight": "ffn_down.weight",    # Wo is down projection
+            "mlp.Wo.bias": "ffn_down.bias",
+            "mlp.norm.weight": "ffn_norm.weight",
+            "mlp.norm.bias": "ffn_norm.bias",
+            "mlp_norm.weight": "ffn_norm.weight",
+            "mlp_norm.bias": "ffn_norm.bias",
+            
+            "norm.weight": "output_norm.weight",   # Final output norm
+            "norm.bias": "output_norm.bias",
+            "final_norm.weight": "output_norm.weight",
+            "final_norm.bias": "output_norm.bias",
+        }
+    elif arch == "bert":
+        return {
+            "embeddings.word_embeddings.weight": "token_embd.weight",
+            "embeddings.position_embeddings.weight": "position_embd.weight",
+            "embeddings.token_type_embeddings.weight": "token_types.weight",
+            "embeddings.LayerNorm.weight": "token_embd_norm.weight",
+            "embeddings.LayerNorm.bias": "token_embd_norm.bias",
+            
+            # Layer templates
+            "attention.self.query.weight": "attn_q.weight",
+            "attention.self.query.bias": "attn_q.bias",
+            "attention.self.key.weight": "attn_k.weight",
+            "attention.self.key.bias": "attn_k.bias",
+            "attention.self.value.weight": "attn_v.weight",
+            "attention.self.value.bias": "attn_v.bias",
+            "attention.output.dense.weight": "attn_out.weight",
+            "attention.output.dense.bias": "attn_out.bias",
+            "attention.output.LayerNorm.weight": "attn_norm.weight",
+            "attention.output.LayerNorm.bias": "attn_norm.bias",
+            
+            "intermediate.dense.weight": "ffn_up.weight",
+            "intermediate.dense.bias": "ffn_up.bias",
+            "output.dense.weight": "ffn_down.weight",
+            "output.dense.bias": "ffn_down.bias",
+            "output.LayerNorm.weight": "ffn_norm.weight",
+            "output.LayerNorm.bias": "ffn_norm.bias"
+        }
+    return {}
+
+
+def canonicalize_tensor_name(hf_name: str, arch: str) -> Optional[str]:
+    """
+    Map a Hugging Face tensor name (with or without 'hf.' prefix)
+    to a standard llama.cpp name.
+    """
+    clean_name = hf_name
+    if clean_name.startswith("hf."):
+        clean_name = clean_name[3:]
+    if clean_name.startswith("model."):
+        clean_name = clean_name[6:]
+    elif clean_name.startswith("bert."):
+        clean_name = clean_name[5:]
+
+    import re
+    layer_match = re.search(r"layers?\.(\d+)\.(.+)", clean_name)
+    t_map = get_llama_tensor_map(arch)
+    
+    if layer_match:
+        layer_idx = int(layer_match.group(1))
+        suffix = layer_match.group(2)
+        if suffix in t_map:
+            return f"blk.{layer_idx}.{t_map[suffix]}"
+    else:
+        if clean_name in t_map:
+            return t_map[clean_name]
+            
+    return None
+
