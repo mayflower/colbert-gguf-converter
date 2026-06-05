@@ -14,7 +14,7 @@ def fake_colbert_model_dir():
         # 1. config.json (backbone)
         config = {
             "model_type": "modernbert",
-            "vocab_size": 10,
+            "vocab_size": 1000,
             "pad_token_id": 0,
             "hidden_size": 256,
             "intermediate_size": 512,
@@ -83,19 +83,23 @@ def fake_colbert_model_dir():
                 {"id": 5, "content": "[Q]", "single_word": False, "lstrip": False, "rstrip": False, "normalized": False, "special": True},
                 {"id": 6, "content": "[D]", "single_word": False, "lstrip": False, "rstrip": False, "normalized": False, "special": True}
             ],
+            "pre_tokenizer": {
+                "type": "BertPreTokenizer"
+            },
             "model": {
                 "type": "WordPiece",
-                "vocab": {"[PAD]": 0, "[UNK]": 1, "[CLS]": 2, "[SEP]": 3, "[Q]": 5, "[D]": 6, "mars": 4},
+                "vocab": {"[PAD]": 0, "[UNK]": 1, "[CLS]": 2, "[SEP]": 3, "[Q]": 5, "[D]": 6, "mars": 4, ".": 7, ",": 8, "!": 9},
                 "unk_token": "[UNK]",
                 "continuing_subword_prefix": "##",
                 "max_input_chars_per_word": 100
             }
         }
+
         with open(tmp_path / "tokenizer.json", "w") as f:
             json.dump(tokenizer_data, f)
             
         tokenizer_config = {
-            "tokenizer_class": "ModernBertTokenizer",
+            "tokenizer_class": "BertTokenizer",
             "model_max_length": 512,
             "clean_up_tokenization_spaces": True,
             "query_prefix": "[Q] ",
@@ -116,7 +120,7 @@ def fake_colbert_model_dir():
         # 5. safetensors (backbone and projection weights)
         # Small weights for testing
         backbone_tensors = {
-            "embeddings.tok_embeddings.weight": torch.randn(10, 256),
+            "embeddings.tok_embeddings.weight": torch.randn(1000, 256),
             "embeddings.norm.weight": torch.randn(256),
             "layers.0.attn.Wqkv.weight": torch.randn(768, 256),
             "layers.0.attn.out_proj.weight": torch.randn(256, 256),

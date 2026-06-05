@@ -103,7 +103,7 @@ def test_gguf_inference_equivalence(fake_colbert_model_dir):
     )
     
     # 4. Compare inference outputs
-    test_text = "Mars is the Red Planet."
+    test_text = "Mars is the Red Planet"
     
     # Run GGUF inference
     gguf_emb = run_inference(

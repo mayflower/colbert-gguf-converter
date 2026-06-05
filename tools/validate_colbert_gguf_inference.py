@@ -566,10 +566,18 @@ def validate_against_hf_direct(
         else:
             # Fall back to raw PyTorch evaluation matching the GGUF forward pass
             hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_path)
+            do_query_expansion = tok_info.get("do_query_expansion", True)
+            if do_query_expansion and hf_tokenizer.mask_token_id is not None:
+                hf_tokenizer.pad_token_id = hf_tokenizer.mask_token_id
+                hf_tokenizer.pad_token = hf_tokenizer.mask_token
+            elif do_query_expansion and hf_tokenizer.pad_token_id is None and hf_tokenizer.eos_token_id is not None:
+                hf_tokenizer.pad_token_id = hf_tokenizer.eos_token_id
+                hf_tokenizer.pad_token = hf_tokenizer.eos_token
+            
             prefix = tok_info["query_prefix"] if is_query else tok_info["document_prefix"]
             full_text = prefix + text
             
-            pad_query = is_query and tok_info.get("do_query_expansion", True)
+            pad_query = is_query and do_query_expansion
             
             inputs = hf_tokenizer(
                 full_text,
