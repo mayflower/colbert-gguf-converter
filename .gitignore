@@ -13,3 +13,7 @@ __pycache__/
 *.npz
 tests/fixtures/pylate_golden.npz
 tests/fixtures/pylate_golden.json
+
+# Local scratch directory
+scratch/
+
