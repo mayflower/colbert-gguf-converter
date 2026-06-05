@@ -75,7 +75,9 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--model-dir", type=str, help="Path to local Hugging Face repository directory")
     
     parser.add_argument("--outfile", type=str, required=True, help="Path to write the GGUF file")
-    parser.add_argument("--outtype", type=str, choices=["f32", "f16"], default="f16",
+    parser.add_argument("--outtype", type=str,
+                        choices=["f32", "f16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2_k", "q3_k_s", "q3_k_m", "q3_k_l", "q4_k_s", "q4_k_m", "q5_k_s", "q5_k_m", "q6_k"],
+                        default="f16",
                         help="Data type for GGUF output tensors (default: f16)")
     parser.add_argument("--cache-dir", type=str, default=None, help="Cache directory for Hugging Face downloads")
     parser.add_argument("--revision", type=str, default="main", help="Git revision/branch name")
@@ -840,6 +842,49 @@ def main() -> None:
         )
 
 
+def find_quantize_binary() -> Optional[str]:
+    import os
+    import shutil
+    # 1. Check env variables
+    env_path = os.environ.get("LLAMA_QUANTIZE") or os.environ.get("QUANTIZE_PATH")
+    if env_path and Path(env_path).exists():
+        return env_path
+        
+    # 2. Check shutil.which
+    for cmd in ["llama-quantize", "quantize"]:
+        p = shutil.which(cmd)
+        if p:
+            return p
+            
+    # 3. Check hardcoded search locations
+    known_paths = [
+        "/bigdata/llmtools/llama.cpp/quantize",
+        "/data/src/ml/quantize/llama.cpp/quantize"
+    ]
+    for kp in known_paths:
+        if Path(kp).exists():
+            return kp
+            
+    return None
+
+
+def quantize_gguf_file(f16_path: Path, target_path: Path, quant_type: str) -> None:
+    quantize_bin = find_quantize_binary()
+    if not quantize_bin:
+        raise RuntimeError(
+            "Quantization binary 'llama-quantize' or 'quantize' not found on this system. "
+            "Please ensure llama.cpp is compiled or set LLAMA_QUANTIZE environment variable."
+        )
+        
+    logger.info(f"Running quantization: {quantize_bin} {f16_path} {target_path} {quant_type.upper()}")
+    import subprocess
+    cmd = [quantize_bin, str(f16_path), str(target_path), quant_type.upper()]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"Quantization failed with exit code {res.returncode}: {res.stderr}")
+    logger.info("Quantization completed successfully.")
+
+
 def convert_model_to_gguf(
     outfile_path: Path,
     target_runtime: str,
@@ -869,11 +914,15 @@ def convert_model_to_gguf(
     schema: str,
     write_profile_sidecar_flag: bool
 ) -> None:
+    is_quantized_outtype = outtype not in ("f16", "f32")
+    write_outtype = "f16" if is_quantized_outtype else outtype
+    actual_write_path = outfile_path.with_name(outfile_path.name + ".tmp_f16") if is_quantized_outtype else outfile_path
+
     # 3. Write GGUF File
-    outfile_path.parent.mkdir(parents=True, exist_ok=True)
+    actual_write_path.parent.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Creating GGUF model ({target_runtime}): {outfile_path}")
-    writer = GGUFWriter(path=str(outfile_path), arch=backbone_cfg.model_type)
+    logger.info(f"Creating GGUF model ({target_runtime}): {actual_write_path}")
+    writer = GGUFWriter(path=str(actual_write_path), arch=backbone_cfg.model_type)
 
     # Embed pg_colbert.profile_json in BOTH runtimes
     writer.add_string("pg_colbert.profile_json", profile.to_json())
@@ -883,7 +932,7 @@ def convert_model_to_gguf(
     writer.add_string("general.basename", model_id or model_path.name)
     writer.add_string("general.architecture", backbone_cfg.model_type)
     
-    ft_code = 1 if outtype == "f16" else 0  # 1 for F16, 0 for F32
+    ft_code = 1 if write_outtype == "f16" else 0  # 1 for F16, 0 for F32
     writer.add_uint32("general.file_type", ft_code)
     
     if model_id:
@@ -1031,9 +1080,9 @@ def convert_model_to_gguf(
         else:
             arr = tensor.detach().cpu().numpy()
             
-        if outtype == "f16" and arr.dtype in (np.float32, np.float64):
+        if write_outtype == "f16" and arr.dtype in (np.float32, np.float64):
             arr = arr.astype(np.float16)
-        elif outtype == "f32" and arr.dtype in (np.float32, np.float64, np.float16):
+        elif write_outtype == "f32" and arr.dtype in (np.float32, np.float64, np.float16):
             arr = arr.astype(np.float32)
             
         return arr
@@ -1106,7 +1155,20 @@ def convert_model_to_gguf(
     writer.write_tensors_to_file()
     writer.close()
     
-    logger.info(f"Successfully converted model to: {outfile_path.resolve()}")
+    if is_quantized_outtype:
+        try:
+            quantize_gguf_file(actual_write_path, outfile_path, outtype)
+            # Clean up intermediate f16 file
+            if actual_write_path.exists():
+                actual_write_path.unlink()
+            logger.info(f"Successfully quantized and converted model to: {outfile_path.resolve()}")
+        except Exception as e:
+            # Clean up intermediate f16 file even on failure
+            if actual_write_path.exists():
+                actual_write_path.unlink()
+            raise e
+    else:
+        logger.info(f"Successfully converted model to: {outfile_path.resolve()}")
 
     # 6. Write sidecar profile
     if write_profile_sidecar_flag:

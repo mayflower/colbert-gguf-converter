@@ -421,11 +421,16 @@ def main() -> None:
     if args.gguf and TRANSFORMERS_AVAILABLE and vector_golden_available and GGUFReader is not None:
         try:
             reader = GGUFReader(Path(args.gguf))
-            arch = decode_gguf_field(reader.fields.get("general.architecture"))
-            model, proj_weight, proj_bias = rebuild_pytorch_model(reader, arch)
-            g_tokenizer, g_tok_info = rebuild_tokenizer(reader)
-            
-            vector_parity_valid = True
+            is_quantized = any(t.tensor_type not in (0, 1) for t in reader.tensors)
+            if is_quantized:
+                known_limitations.append("GGUF model contains quantized tensors; direct vector parity verification skipped.")
+                vector_parity_valid = None
+            else:
+                arch = decode_gguf_field(reader.fields.get("general.architecture"))
+                model, proj_weight, proj_bias = rebuild_pytorch_model(reader, arch)
+                g_tokenizer, g_tok_info = rebuild_tokenizer(reader)
+                
+                vector_parity_valid = True
             for i, text_entry in enumerate(texts_report):
                 gguf_emb = run_inference(
                     model=model,

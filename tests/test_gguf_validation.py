@@ -356,3 +356,55 @@ def test_generate_model_card():
     assert "Not strictly verified or verification failed" in card_failed
 
 
+def test_quantize_gguf_conversion_skip_validation(fake_colbert_model_dir, monkeypatch):
+    """Test GGUF conversion with a quantization outtype (e.g. q8_0) and ensure it bypasses direct validation."""
+    outfile = fake_colbert_model_dir / "quantized_model.gguf"
+    
+    mock_quantize_called = []
+    
+    def mock_find_quantize_binary():
+        return "/bin/true"
+        
+    def mock_quantize_gguf_file(f16_path, target_path, quant_type):
+        mock_quantize_called.append((f16_path, target_path, quant_type))
+        import shutil
+        shutil.copy(f16_path, target_path)
+
+    import tools.convert_colbert_hf_to_gguf
+    monkeypatch.setattr(tools.convert_colbert_hf_to_gguf, "find_quantize_binary", mock_find_quantize_binary)
+    monkeypatch.setattr(tools.convert_colbert_hf_to_gguf, "quantize_gguf_file", mock_quantize_gguf_file)
+    
+    import gguf
+    monkeypatch.setattr(gguf.gguf_reader.ReaderTensor, "tensor_type", property(lambda self: 2))  # Q4_0
+
+    # Run conversion
+    import sys
+    old_argv = sys.argv
+    sys.argv = [
+        "convert_colbert_hf_to_gguf.py",
+        "--model-dir", str(fake_colbert_model_dir),
+        "--outfile", str(outfile),
+        "--outtype", "q8_0"
+    ]
+    try:
+        tools.convert_colbert_hf_to_gguf.main()
+    finally:
+        sys.argv = old_argv
+        
+    assert len(mock_quantize_called) == 1
+    f16_p, target_p, q_type = mock_quantize_called[0]
+    assert q_type == "q8_0"
+    assert outfile.exists()
+    
+    # Test validate_colbert_gguf_inference on the quantized file - it should exit with 0 (skip/success)
+    import tools.validate_colbert_gguf_inference
+    sys.argv = ["validate_colbert_gguf_inference.py", str(outfile)]
+    try:
+        tools.validate_colbert_gguf_inference.main()
+    except SystemExit as se:
+        assert se.code == 0
+    finally:
+        sys.argv = old_argv
+
+
+

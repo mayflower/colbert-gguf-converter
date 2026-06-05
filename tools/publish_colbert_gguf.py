@@ -30,8 +30,10 @@ def parse_args() -> argparse.Namespace:
                         help="Source Hugging Face model repository ID (e.g. VAGOsolutions/SauerkrautLM-Multi-ModernColBERT)")
     parser.add_argument("--target-repo-id", type=str, required=True,
                         help="Target Hugging Face model repository ID (e.g. username/SauerkrautLM-Multi-ModernColBERT-GGUF)")
-    parser.add_argument("--outtype", type=str, choices=["f32", "f16"], default="f16",
-                        help="Conversion precision: f16 or f32 (default: f16)")
+    parser.add_argument("--outtype", type=str,
+                        choices=["f32", "f16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2_k", "q3_k_s", "q3_k_m", "q3_k_l", "q4_k_s", "q4_k_m", "q5_k_s", "q5_k_m", "q6_k"],
+                        default="f16",
+                        help="Conversion precision (default: f16)")
     parser.add_argument("--token", type=str, default=None,
                         help="HuggingFace API write token (or set HF_TOKEN environment variable)")
     parser.add_argument("--private", action="store_true", help="Create the target repository as private")
