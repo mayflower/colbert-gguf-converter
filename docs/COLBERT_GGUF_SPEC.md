@@ -7,6 +7,8 @@ This document defines the custom GGUF layout, metadata keys, and tensor mapping 
 All compliant ColBERT GGUF files must define the schema version key:
 * `pg_colbert.gguf_schema` = `"pg_colbert_v1"`
 
+For comprehensive runtime configuration, models should also embed a formal ColBERT runtime profile under `pg_colbert.profile_json` or provide it as a sidecar JSON file (see [COLBERT_PROFILE_SPEC.md](COLBERT_PROFILE_SPEC.md)).
+
 ## General & Provenance Metadata
 
 Standard llama.cpp / GGUF metadata keys for model provenance:
@@ -31,6 +33,7 @@ Information about how the GGUF file was generated:
 | `pg_colbert.converter.version` | `string` | Version of the converter script. |
 | `pg_colbert.converter.command` | `string` | The exact CLI command used to trigger conversion. |
 | `pg_colbert.tensor_map_json` | `string` | JSON string mapping canonical runtime tensors to stored GGUF tensor names. |
+| `pg_colbert.profile_json` | `string` | UTF-8 encoded JSON string containing the formal model runtime profile matching `pg_colbert_profile_v1` (see [COLBERT_PROFILE_SPEC.md](COLBERT_PROFILE_SPEC.md)). |
 
 ## ColBERT Metadata
 
