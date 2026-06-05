@@ -181,7 +181,6 @@ def main() -> None:
         print(f"\nStep 1: Converting model '{args.model_id}' to {local_gguf_path}...")
         
         # Override sys.argv to trigger conversion logic
-        import sys
         old_argv = sys.argv
         model_is_dir = Path(args.model_id).exists() and Path(args.model_id).is_dir()
         
