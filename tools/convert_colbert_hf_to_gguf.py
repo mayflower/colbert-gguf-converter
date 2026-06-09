@@ -1080,7 +1080,10 @@ def convert_model_to_gguf(
         else:
             arr = tensor.detach().cpu().numpy()
             
-        if write_outtype == "f16" and arr.dtype in (np.float32, np.float64):
+        # 1D tensors (biases, layer norms) must remain F32 for GGML compatibility
+        if tensor.ndim <= 1:
+            arr = arr.astype(np.float32)
+        elif write_outtype == "f16" and arr.dtype in (np.float32, np.float64):
             arr = arr.astype(np.float16)
         elif write_outtype == "f32" and arr.dtype in (np.float32, np.float64, np.float16):
             arr = arr.astype(np.float32)

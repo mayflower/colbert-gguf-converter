@@ -190,9 +190,15 @@ The `pg_colbert.tensor_map_json` key contains a JSON map mapping the canonical r
 
 `tools/export_to_llama_cpp.py` converts a `pg_colbert_v1` GGUF into a standard
 embedding GGUF that loads and runs directly in upstream llama.cpp and ollama
-(validated against llama.cpp tag **b9509**). It is a backbone-only artifact:
-the ColBERT projection and profile are not part of the llama.cpp graph and are
-dropped (the projection is runtime-only and applied by the serving layer).
+(validated against llama.cpp tag **b9509**). It is a backbone-only artifact: the
+`colbert.proj.*` tensors are dropped, because they are not part of the llama.cpp
+BERT graph and an unknown tensor trips llama.cpp's tensor-count check ("wrong
+number of tensors; expected N, got N-1"), which prevents loading. The serving
+layer applies the projection (the source `pg_colbert` GGUF retains it).
+
+The `pg_colbert.profile_json` metadata key *is* retained: unknown **metadata** keys
+(unlike unknown tensors) are ignored by llama.cpp, so the model still loads while
+letting the serving layer read the ColBERT runtime profile directly from the file.
 
 To stay compatible with llama.cpp's BERT/ModernBERT graph, the export performs
 three alignments beyond stripping pg_colbert metadata:

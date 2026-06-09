@@ -110,8 +110,11 @@ def main() -> None:
     # exported model loads in upstream llama.cpp / ollama.
     kv_canonical = get_llama_kv_canonical_map(arch)
     for key, field in reader.fields.items():
+        # Keep pg_colbert.profile_json so it can be loaded directly from the GGUF by pg_colbert_llama
+        if key == "pg_colbert.profile_json":
+            pass
         # Skip colbert configs, pg_colbert tags, internal header fields, and duplicates
-        if key in skipped_keys or any(key.startswith(p) for p in skipped_prefixes):
+        elif key in skipped_keys or any(key.startswith(p) for p in skipped_prefixes):
             if args.verbose:
                 print(f"Skipping metadata key: {key}")
             continue
@@ -240,6 +243,10 @@ def main() -> None:
                 print(f"Warning: Could not map tensor: {t.name}")
                 skipped_count += 1
         elif t.name.startswith("colbert.proj."):
+            # Drop the ColBERT projection: it is not part of the llama.cpp BERT
+            # graph, and an unknown tensor trips llama.cpp's tensor-count check
+            # ("wrong number of tensors"), preventing the model from loading. The
+            # serving layer applies the projection (the pg_colbert GGUF retains it).
             if args.verbose:
                 print(f"Dropping runtime-only projection tensor: {t.name}")
             skipped_count += 1
