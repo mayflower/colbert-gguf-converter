@@ -10,8 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+import numpy as np
+
 sys.path.append(str(Path(__file__).parent.resolve()))
-from colbert_profile import get_llama_tensor_map, canonicalize_tensor_name
+from colbert_profile import get_llama_tensor_map, get_llama_kv_canonical_map
 
 try:
     from gguf import GGUFReader, GGUFWriter, GGMLQuantizationType
@@ -93,31 +95,39 @@ def main() -> None:
     # Copy metadata fields, skipping pg_colbert specific, internal GGUF headers, and duplicate keys
     skipped_prefixes = ["pg_colbert.", "colbert.", "GGUF."]
     skipped_keys = ["general.architecture"]
+    # Rename the converter's HF-style hyperparameter keys to the canonical
+    # llama.cpp keys (e.g. bert.hidden_size -> bert.embedding_length) so the
+    # exported model loads in upstream llama.cpp / ollama.
+    kv_canonical = get_llama_kv_canonical_map(arch)
     for key, field in reader.fields.items():
         # Skip colbert configs, pg_colbert tags, internal header fields, and duplicates
         if key in skipped_keys or any(key.startswith(p) for p in skipped_prefixes):
             if args.verbose:
                 print(f"Skipping metadata key: {key}")
             continue
-            
+
+        out_key = kv_canonical.get(key, key)
+        if args.verbose and out_key != key:
+            print(f"Canonicalizing metadata key: {key} -> {out_key}")
+
         val = decode_field(field)
-        
+
         # Write to GGUFWriter based on type
         val_type = field.types[0]
         type_name = getattr(val_type, "name", str(val_type))
-        
+
         if type_name == "STRING":
-            writer.add_string(key, val)
+            writer.add_string(out_key, val)
         elif type_name == "UINT32":
-            writer.add_uint32(key, val)
+            writer.add_uint32(out_key, val)
         elif type_name == "INT32":
-            writer.add_int32(key, val)
+            writer.add_int32(out_key, val)
         elif type_name == "FLOAT32":
-            writer.add_float32(key, val)
+            writer.add_float32(out_key, val)
         elif type_name == "BOOL":
-            writer.add_bool(key, val)
+            writer.add_bool(out_key, val)
         elif type_name == "ARRAY":
-            writer.add_array(key, val)
+            writer.add_array(out_key, val)
         else:
             if args.verbose:
                 print(f"Skipping metadata key {key} due to unmapped type {type_name}")
@@ -130,6 +140,13 @@ def main() -> None:
         if t.name.startswith("hf."):
             # Strip "hf." prefix
             hf_raw_name = t.name[3:]
+
+            # Upcast to F32. llama.cpp's BERT graph evaluates LayerNorm in F32 and
+            # its CPU binary ops reject mixed F32/F16 operands ("binary_op: unsupported
+            # types: dst: f32, src0: f32, src1: f16"), so an all-F16 export aborts during
+            # warmup. F32 also matches ggml's convention of keeping norm/embedding
+            # weights in full precision. Quantize separately if a smaller file is needed.
+            tdata = np.asarray(t.data, dtype=np.float32)
             
             # Find matching standard llama.cpp name
             llama_name = None
@@ -145,17 +162,17 @@ def main() -> None:
                 
                 # Handle concatenated Wi gate/up projections
                 if suffix == "mlp.Wi.weight":
-                    mid = t.data.shape[-1] // 2
-                    gate_data = t.data[..., :mid]
-                    up_data = t.data[..., mid:]
+                    mid = tdata.shape[-1] // 2
+                    gate_data = tdata[..., :mid]
+                    up_data = tdata[..., mid:]
                     writer.add_tensor(f"blk.{layer_idx}.ffn_gate.weight", gate_data)
                     writer.add_tensor(f"blk.{layer_idx}.ffn_up.weight", up_data)
                     mapped_count += 2
                     continue
                 elif suffix == "mlp.Wi.bias":
-                    mid = t.data.shape[0] // 2
-                    gate_data = t.data[:mid]
-                    up_data = t.data[mid:]
+                    mid = tdata.shape[0] // 2
+                    gate_data = tdata[:mid]
+                    up_data = tdata[mid:]
                     writer.add_tensor(f"blk.{layer_idx}.ffn_gate.bias", gate_data)
                     writer.add_tensor(f"blk.{layer_idx}.ffn_up.bias", up_data)
                     mapped_count += 2
@@ -178,9 +195,7 @@ def main() -> None:
             if llama_name:
                 if args.verbose:
                     print(f"Mapping tensor: {t.name} -> {llama_name} (Shape: {list(t.shape)})")
-                # Retrieve raw data using GGUFReader
-                # t.data is a numpy array
-                writer.add_tensor(llama_name, t.data)
+                writer.add_tensor(llama_name, tdata)
                 mapped_count += 1
             else:
                 print(f"Warning: Could not map tensor: {t.name}")

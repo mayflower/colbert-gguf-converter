@@ -182,7 +182,14 @@ def write_profile_sidecar(profile: ColbertProfile, gguf_path: Union[str, Path]) 
 
 
 def get_llama_tensor_map(arch: str) -> Dict[str, str]:
-    """Map pg_colbert hf-prefixed tensor suffix to standard llama.cpp names."""
+    """Map pg_colbert hf-prefixed tensor suffix to standard llama.cpp names.
+
+    Names follow the upstream llama.cpp BERT/ModernBERT convention (the same one
+    ollama's bundled llama.cpp expects, e.g. tag b9509): attn_output,
+    attn_output_norm and layer_output_norm for BERT post-LN; attn_norm/ffn_norm/
+    output_norm pre-norms for ModernBERT. Keeping these aligned lets the exported
+    GGUF load and run directly in ollama / llama.cpp without renaming.
+    """
     if arch == "modernbert":
         return {
             "embeddings.tok_embeddings.weight": "token_embd.weight",
@@ -192,10 +199,10 @@ def get_llama_tensor_map(arch: str) -> Dict[str, str]:
             # Layer templates (will be processed per block index)
             "attn.Wqkv.weight": "attn_qkv.weight",
             "attn.Wqkv.bias": "attn_qkv.bias",
-            "attn.out_proj.weight": "attn_out.weight",
-            "attn.out_proj.bias": "attn_out.bias",
-            "attn.Wo.weight": "attn_out.weight",
-            "attn.Wo.bias": "attn_out.bias",
+            "attn.out_proj.weight": "attn_output.weight",
+            "attn.out_proj.bias": "attn_output.bias",
+            "attn.Wo.weight": "attn_output.weight",
+            "attn.Wo.bias": "attn_output.bias",
             "attn.norm.weight": "attn_norm.weight",
             "attn.norm.bias": "attn_norm.bias",
             "attn_norm.weight": "attn_norm.weight",
@@ -234,19 +241,45 @@ def get_llama_tensor_map(arch: str) -> Dict[str, str]:
             "attention.self.key.bias": "attn_k.bias",
             "attention.self.value.weight": "attn_v.weight",
             "attention.self.value.bias": "attn_v.bias",
-            "attention.output.dense.weight": "attn_out.weight",
-            "attention.output.dense.bias": "attn_out.bias",
-            "attention.output.LayerNorm.weight": "attn_norm.weight",
-            "attention.output.LayerNorm.bias": "attn_norm.bias",
-            
+            "attention.output.dense.weight": "attn_output.weight",
+            "attention.output.dense.bias": "attn_output.bias",
+            # BERT is post-LN: the LayerNorm after attention is attn_output_norm,
+            # and the LayerNorm after the FFN is layer_output_norm (llama.cpp BERT graph).
+            "attention.output.LayerNorm.weight": "attn_output_norm.weight",
+            "attention.output.LayerNorm.bias": "attn_output_norm.bias",
+
             "intermediate.dense.weight": "ffn_up.weight",
             "intermediate.dense.bias": "ffn_up.bias",
             "output.dense.weight": "ffn_down.weight",
             "output.dense.bias": "ffn_down.bias",
-            "output.LayerNorm.weight": "ffn_norm.weight",
-            "output.LayerNorm.bias": "ffn_norm.bias"
+            "output.LayerNorm.weight": "layer_output_norm.weight",
+            "output.LayerNorm.bias": "layer_output_norm.bias"
         }
     return {}
+
+
+def get_llama_kv_canonical_map(arch: str) -> Dict[str, str]:
+    """Map the converter's HF-style hyperparameter KV keys to the canonical
+    llama.cpp keys for ``arch``.
+
+    The pg_colbert GGUF stores HF config names (e.g. ``bert.hidden_size``) so the
+    pg_colbert C++ engine can read them via its legacy-metadata path. Upstream
+    llama.cpp (and ollama) instead require canonical keys (e.g.
+    ``bert.embedding_length``). When exporting a llama.cpp-compliant model these
+    keys must be renamed, or the model fails to load (``key not found in model:
+    {arch}.context_length``). ``type_vocab_size`` becomes the shared
+    ``tokenizer.ggml.token_type_count`` key.
+    """
+    p = f"{arch}."
+    return {
+        f"{p}hidden_size": f"{p}embedding_length",
+        f"{p}intermediate_size": f"{p}feed_forward_length",
+        f"{p}num_hidden_layers": f"{p}block_count",
+        f"{p}num_attention_heads": f"{p}attention.head_count",
+        f"{p}max_position_embeddings": f"{p}context_length",
+        f"{p}layer_norm_eps": f"{p}attention.layer_norm_epsilon",
+        f"{p}type_vocab_size": "tokenizer.ggml.token_type_count",
+    }
 
 
 def canonicalize_tensor_name(hf_name: str, arch: str) -> Optional[str]:
