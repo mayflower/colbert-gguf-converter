@@ -258,6 +258,69 @@ def get_llama_tensor_map(arch: str) -> Dict[str, str]:
     return {}
 
 
+def _llama_wpm_token(token: str, token_type: int) -> str:
+    """Render a vocab token in llama.cpp WPM form.
+
+    llama.cpp's BERT WordPiece tokenizer expects normal (non-special) word-start
+    tokens to be prefixed with U+2581 and continuation tokens (``##``) stripped of
+    that marker. Special/added tokens are kept verbatim.
+    """
+    if token_type != 1:
+        return token
+    if token.startswith("##"):
+        return token[2:]
+    return "▁" + token
+
+
+def build_ggml_bert_tokenizer(tokenizer_json_str: str):
+    """Build llama.cpp ``tokenizer.ggml.tokens`` / ``token_type`` arrays from a raw
+    Hugging Face ``tokenizer.json`` string.
+
+    Returns ``(tokens, token_types)`` where ``tokens`` are WPM-rendered strings in
+    vocab-id order and ``token_types`` are the GGUF token-type codes (1=normal,
+    3=control/special, 4=user-defined). Raises ``ValueError`` if the vocab is
+    missing or its ids are not contiguous.
+    """
+    import json as _json
+
+    tokenizer_json = _json.loads(tokenizer_json_str)
+    vocab = tokenizer_json.get("model", {}).get("vocab")
+    if not isinstance(vocab, dict):
+        raise ValueError("tokenizer.json does not contain model.vocab")
+
+    max_id = max(vocab.values())
+    for added in tokenizer_json.get("added_tokens", []):
+        if isinstance(added, dict) and isinstance(added.get("id"), int):
+            max_id = max(max_id, added["id"])
+
+    tokens = [None] * (max_id + 1)
+    token_types = [1] * (max_id + 1)
+    for token, idx in vocab.items():
+        if not isinstance(idx, int) or idx < 0 or idx >= len(tokens):
+            raise ValueError(f"invalid tokenizer vocab id for {token!r}: {idx!r}")
+        tokens[idx] = token
+    for added in tokenizer_json.get("added_tokens", []):
+        if not isinstance(added, dict):
+            continue
+        idx = added.get("id")
+        content = added.get("content")
+        if not isinstance(idx, int) or not isinstance(content, str):
+            continue
+        if idx < 0 or idx >= len(tokens):
+            raise ValueError(f"invalid added tokenizer id for {content!r}: {idx!r}")
+        tokens[idx] = content
+        token_types[idx] = 3 if added.get("special") else 4
+
+    missing = [str(i) for i, t in enumerate(tokens) if t is None]
+    if missing:
+        raise ValueError("tokenizer vocab ids are not contiguous: " + ", ".join(missing[:10]))
+
+    return (
+        [_llama_wpm_token(str(t), tt) for t, tt in zip(tokens, token_types)],
+        token_types,
+    )
+
+
 def get_llama_kv_canonical_map(arch: str) -> Dict[str, str]:
     """Map the converter's HF-style hyperparameter KV keys to the canonical
     llama.cpp keys for ``arch``.

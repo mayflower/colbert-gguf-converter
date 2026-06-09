@@ -185,3 +185,57 @@ The `pg_colbert.tensor_map_json` key contains a JSON map mapping the canonical r
 | `layers.{i}.output.LayerNorm.bias` | `hf.bert.encoder.layer.{i}.output.LayerNorm.bias` |
 | `projection.weight` | `colbert.proj.weight` |
 | `projection.bias` | `colbert.proj.bias` (if present) |
+
+## llama.cpp / ollama Export (`export_to_llama_cpp.py`)
+
+`tools/export_to_llama_cpp.py` converts a `pg_colbert_v1` GGUF into a standard
+embedding GGUF that loads and runs directly in upstream llama.cpp and ollama
+(validated against llama.cpp tag **b9509**). It is a backbone-only artifact:
+the ColBERT projection and profile are not part of the llama.cpp graph and are
+dropped (the projection is runtime-only and applied by the serving layer).
+
+To stay compatible with llama.cpp's BERT/ModernBERT graph, the export performs
+three alignments beyond stripping pg_colbert metadata:
+
+1. **Tensor names** → upstream llama.cpp convention. BERT is post-LN, so the
+   LayerNorm after attention is `attn_output_norm` and the LayerNorm after the
+   FFN is `layer_output_norm`; the attention output projection is `attn_output`.
+   ModernBERT is pre-norm and keeps `attn_norm` / `ffn_norm` / `output_norm`;
+   only its attention output projection renames to `attn_output`.
+
+   | HF suffix | llama.cpp / ollama name |
+   |---|---|
+   | `attention.output.dense` (BERT) | `attn_output` |
+   | `attention.output.LayerNorm` (BERT) | `attn_output_norm` |
+   | `output.LayerNorm` (BERT) | `layer_output_norm` |
+   | `attn.out_proj` / `attn.Wo` (ModernBERT) | `attn_output` |
+
+2. **Hyperparameter KV keys** → canonical llama.cpp keys (the HF-style keys the
+   pg_colbert runtime reads are renamed):
+
+   | pg_colbert key | llama.cpp key |
+   |---|---|
+   | `{arch}.hidden_size` | `{arch}.embedding_length` |
+   | `{arch}.intermediate_size` | `{arch}.feed_forward_length` |
+   | `{arch}.num_hidden_layers` | `{arch}.block_count` |
+   | `{arch}.num_attention_heads` | `{arch}.attention.head_count` |
+   | `{arch}.max_position_embeddings` | `{arch}.context_length` |
+   | `{arch}.layer_norm_eps` | `{arch}.attention.layer_norm_epsilon` |
+   | `{arch}.type_vocab_size` | `tokenizer.ggml.token_type_count` |
+
+3. **Tokenizer** → a `tokenizer.ggml.*` BERT tokenizer is built from the embedded
+   `tokenizer.huggingface.json` (WordPiece: word-start tokens prefixed with U+2581,
+   `##` continuations stripped, added/special tokens kept verbatim), with
+   `tokenizer.ggml.{tokens,token_type,model,bos/seperator/padding/unknown/mask_token_id,
+   add_bos/eos/sep_token}` populated.
+
+Tensors are written as **F32**: llama.cpp's BERT LayerNorm evaluates in F32 and its
+CPU binary ops reject mixed F32/F16 operands, so an all-F16 export aborts during
+warmup (`binary_op: unsupported types: dst: f32, src0: f32, src1: f16`). Quantize
+the exported model separately if a smaller file is required.
+
+> **Parity note.** The exported backbone reproduces PyLate token embeddings
+> essentially exactly (content tokens within ~1e-6 cosine). Full query parity
+> additionally depends on `attend_to_expansion_tokens=false` (content tokens not
+> attending to the `[MASK]` expansion); standard llama.cpp `/embeddings` uses full
+> attention, which is the same approximation the pg_colbert runtime documents.

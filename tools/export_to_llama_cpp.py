@@ -13,7 +13,11 @@ from typing import Any, Dict
 import numpy as np
 
 sys.path.append(str(Path(__file__).parent.resolve()))
-from colbert_profile import get_llama_tensor_map, get_llama_kv_canonical_map
+from colbert_profile import (
+    get_llama_tensor_map,
+    get_llama_kv_canonical_map,
+    build_ggml_bert_tokenizer,
+)
 
 try:
     from gguf import GGUFReader, GGUFWriter, GGMLQuantizationType
@@ -92,9 +96,15 @@ def main() -> None:
     print(f"Writing llama.cpp-compliant model: {outfile_path}")
     writer = GGUFWriter(str(outfile_path), arch=arch)
     
-    # Copy metadata fields, skipping pg_colbert specific, internal GGUF headers, and duplicate keys
+    # Copy metadata fields, skipping pg_colbert specific, internal GGUF headers, and duplicate keys.
+    # The raw HF tokenizer blobs are replaced below by a llama.cpp ggml tokenizer.
     skipped_prefixes = ["pg_colbert.", "colbert.", "GGUF."]
-    skipped_keys = ["general.architecture"]
+    skipped_keys = [
+        "general.architecture",
+        "tokenizer.huggingface.json",
+        "tokenizer.config.json",
+        "tokenizer.special_tokens_map.json",
+    ]
     # Rename the converter's HF-style hyperparameter keys to the canonical
     # llama.cpp keys (e.g. bert.hidden_size -> bert.embedding_length) so the
     # exported model loads in upstream llama.cpp / ollama.
@@ -131,6 +141,35 @@ def main() -> None:
         else:
             if args.verbose:
                 print(f"Skipping metadata key {key} due to unmapped type {type_name}")
+
+    # Build a llama.cpp ggml tokenizer from the embedded HF tokenizer.json. The
+    # pg_colbert GGUF stores the raw tokenizer (tokenizer.huggingface.json) for its
+    # own runtime; llama.cpp / ollama instead need tokenizer.ggml.* arrays.
+    hf_tok = decode_field(reader.fields.get("tokenizer.huggingface.json"))
+    if hf_tok:
+        tokens, token_types = build_ggml_bert_tokenizer(hf_tok)
+        writer.add_string("tokenizer.ggml.model", "bert")
+        writer.add_array("tokenizer.ggml.tokens", tokens)
+        writer.add_array("tokenizer.ggml.token_type", token_types)
+
+        def _special_id(key: str, default: int) -> int:
+            v = decode_field(reader.fields.get(key))
+            return int(v) if v is not None else default
+
+        # [CLS]=bos, [SEP]=separator, [PAD]=padding, [UNK]=100, [MASK]=103 (standard BERT).
+        writer.add_uint32("tokenizer.ggml.bos_token_id", _special_id("colbert.cls_token_id", 101))
+        writer.add_uint32("tokenizer.ggml.seperator_token_id", _special_id("colbert.sep_token_id", 102))
+        writer.add_uint32("tokenizer.ggml.padding_token_id", _special_id("colbert.pad_token_id", 0))
+        writer.add_uint32("tokenizer.ggml.unknown_token_id", 100)
+        writer.add_uint32("tokenizer.ggml.mask_token_id", 103)
+        writer.add_bool("tokenizer.ggml.add_bos_token", True)
+        writer.add_bool("tokenizer.ggml.add_eos_token", False)
+        writer.add_bool("tokenizer.ggml.add_sep_token", True)
+        if args.verbose:
+            print(f"Built ggml tokenizer with {len(tokens)} tokens")
+    else:
+        print("Warning: input GGUF has no tokenizer.huggingface.json; "
+              "output may lack a llama.cpp-loadable tokenizer.", file=sys.stderr)
 
     # Copy and rename tensors
     mapped_count = 0

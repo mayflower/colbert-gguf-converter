@@ -5,10 +5,13 @@ import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
+import json
+
 from tools.colbert_profile import (
     get_llama_tensor_map,
     get_llama_kv_canonical_map,
     canonicalize_tensor_name,
+    build_ggml_bert_tokenizer,
 )
 
 
@@ -72,6 +75,35 @@ def test_kv_canonical_map_is_arch_prefixed():
     assert c["modernbert.max_position_embeddings"] == "modernbert.context_length"
     # token_type_count is a shared tokenizer key, not arch-prefixed
     assert c["modernbert.type_vocab_size"] == "tokenizer.ggml.token_type_count"
+
+
+def test_build_ggml_bert_tokenizer():
+    tok_json = json.dumps({
+        "model": {"vocab": {"[PAD]": 0, "hello": 1, "##ing": 2, "world": 3}},
+        "added_tokens": [
+            {"id": 0, "content": "[PAD]", "special": True},
+            {"id": 4, "content": "[Q]", "special": False},
+        ],
+    })
+    tokens, token_types = build_ggml_bert_tokenizer(tok_json)
+
+    # contiguous ids 0..4
+    assert len(tokens) == 5 and len(token_types) == 5
+    # normal word-start tokens get the U+2581 marker
+    assert tokens[1] == "▁hello"
+    assert tokens[3] == "▁world"
+    # continuation (##) tokens are stripped
+    assert tokens[2] == "ing"
+    # special/added tokens kept verbatim with control/user-defined type codes
+    assert tokens[0] == "[PAD]" and token_types[0] == 3
+    assert tokens[4] == "[Q]" and token_types[4] == 4
+
+
+def test_build_ggml_bert_tokenizer_rejects_noncontiguous():
+    import pytest
+    tok_json = json.dumps({"model": {"vocab": {"a": 0, "b": 2}}})  # missing id 1
+    with pytest.raises(ValueError):
+        build_ggml_bert_tokenizer(tok_json)
 
 
 def test_canonicalize_tensor_name_layer_and_global():
