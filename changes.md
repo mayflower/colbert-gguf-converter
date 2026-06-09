@@ -51,10 +51,12 @@ three layers, in order:
 - Retains the `pg_colbert.profile_json` metadata key in the exported GGUF (an
   unknown KV is ignored by llama.cpp, so it is harmless there, while letting the
   serving layer read the ColBERT runtime profile directly from the file).
-- Drops the `colbert.proj.*` tensors. The projection is not part of the llama.cpp
-  BERT graph, and keeping the unknown tensor trips llama.cpp's tensor-count check
-  ("wrong number of tensors"), so the model would not load. The serving layer
-  applies the projection (the source `pg_colbert` GGUF retains it).
+- Drops the `colbert.proj.*` tensors from the GGUF (an unknown tensor trips
+  llama.cpp's tensor-count check, so the model would not load) and instead writes
+  them to a **`<outfile>.colbert_proj` sidecar** (magic `OLPROJ01`; `out_features`,
+  `in_features`, `has_bias`, then row-major `[out][in]` float32 weight + optional
+  bias). The serving layer loads the sidecar and applies the 384→128 projection.
+  Disable with `--no-projection-sidecar`.
 - Upcasts all exported tensors to **F32** (BERT LayerNorm in b9509 is F32 and its
   CPU binary ops reject mixed F32/F16). Quantize separately if a smaller file is
   needed.

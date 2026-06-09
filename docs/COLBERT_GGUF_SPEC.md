@@ -191,10 +191,23 @@ The `pg_colbert.tensor_map_json` key contains a JSON map mapping the canonical r
 `tools/export_to_llama_cpp.py` converts a `pg_colbert_v1` GGUF into a standard
 embedding GGUF that loads and runs directly in upstream llama.cpp and ollama
 (validated against llama.cpp tag **b9509**). It is a backbone-only artifact: the
-`colbert.proj.*` tensors are dropped, because they are not part of the llama.cpp
-BERT graph and an unknown tensor trips llama.cpp's tensor-count check ("wrong
-number of tensors; expected N, got N-1"), which prevents loading. The serving
-layer applies the projection (the source `pg_colbert` GGUF retains it).
+`colbert.proj.*` tensors are dropped from the GGUF, because they are not part of
+the llama.cpp BERT graph and an unknown tensor trips llama.cpp's tensor-count
+check ("wrong number of tensors; expected N, got N-1"), which prevents loading.
+
+The projection instead travels as a **sidecar** next to the GGUF,
+`<outfile>.colbert_proj`, which the serving layer loads and applies (384→128 + the
+model's normalization). Disable with `--no-projection-sidecar`. Format
+(little-endian):
+
+| field | type | notes |
+|---|---|---|
+| magic | 8 bytes | `OLPROJ01` |
+| `out_features` | uint32 | projected dim (e.g. 128) |
+| `in_features` | uint32 | backbone hidden size (e.g. 384) |
+| `has_bias` | uint32 | 0 or 1 |
+| weight | `out*in` float32 | row-major `[out][in]`; `projected[j] = Σ_k weight[j*in+k]·hidden[k]` |
+| bias | `out` float32 | present iff `has_bias == 1` |
 
 The `pg_colbert.profile_json` metadata key *is* retained: unknown **metadata** keys
 (unlike unknown tensors) are ignored by llama.cpp, so the model still loads while

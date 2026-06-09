@@ -106,6 +106,42 @@ def test_build_ggml_bert_tokenizer_rejects_noncontiguous():
         build_ggml_bert_tokenizer(tok_json)
 
 
+def test_write_projection_sidecar(tmp_path):
+    import struct
+    import numpy as np
+    from tools.export_to_llama_cpp import write_projection_sidecar, PROJ_SIDECAR_MAGIC
+
+    weight = np.arange(2 * 3, dtype=np.float32).reshape(2, 3)  # out=2, in=3
+    path = tmp_path / "model.gguf.colbert_proj"
+    write_projection_sidecar(path, weight, None, 2, 3)
+
+    b = path.read_bytes()
+    assert b[:8] == PROJ_SIDECAR_MAGIC
+    out_f, in_f, has_bias = struct.unpack("<III", b[8:20])
+    assert (out_f, in_f, has_bias) == (2, 3, 0)
+    back = np.frombuffer(b[20:20 + out_f * in_f * 4], dtype=np.float32).reshape(out_f, in_f)
+    assert np.array_equal(back, weight)
+    # row-major [out][in]: projected[j] = sum_k weight[j*in + k] * hidden[k]
+    assert back[1, 2] == weight[1, 2]
+
+
+def test_write_projection_sidecar_with_bias(tmp_path):
+    import struct
+    import numpy as np
+    from tools.export_to_llama_cpp import write_projection_sidecar, PROJ_SIDECAR_MAGIC
+
+    weight = np.ones((4, 8), dtype=np.float32)
+    bias = np.arange(4, dtype=np.float32)
+    path = tmp_path / "m.colbert_proj"
+    write_projection_sidecar(path, weight, bias, 4, 8)
+    b = path.read_bytes()
+    out_f, in_f, has_bias = struct.unpack("<III", b[8:20])
+    assert (out_f, in_f, has_bias) == (4, 8, 1)
+    off = 20 + out_f * in_f * 4
+    back_bias = np.frombuffer(b[off:off + out_f * 4], dtype=np.float32)
+    assert np.array_equal(back_bias, bias)
+
+
 def test_canonicalize_tensor_name_layer_and_global():
     # layer-specific
     assert (

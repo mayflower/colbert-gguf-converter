@@ -6,6 +6,7 @@ and drops pg_colbert-specific metadata/projection tensors, allowing direct valid
 """
 
 import argparse
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -31,7 +32,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("infile", type=str, help="Path to input pg_colbert_v1 GGUF file")
     parser.add_argument("outfile", type=str, help="Path to output llama.cpp GGUF file")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose log details")
+    parser.add_argument("--projection-sidecar", dest="projection_sidecar", action="store_true", default=True,
+                        help="Write the ColBERT projection sidecar (default: true)")
+    parser.add_argument("--no-projection-sidecar", dest="projection_sidecar", action="store_false",
+                        help="Do not write the ColBERT projection sidecar")
     return parser.parse_args()
+
+
+# ColBERT projection sidecar format (little-endian), consumed by the ollama
+# serving layer. The backbone GGUF drops colbert.proj so it loads in stock
+# llama.cpp; the projection travels alongside it here.
+#   magic:        b"OLPROJ01" (8 bytes)
+#   out_features: uint32
+#   in_features:  uint32
+#   has_bias:     uint32 (0/1)
+#   weight:       out_features * in_features float32, row-major [out][in]
+#                 (projected[j] = sum_k weight[j*in + k] * hidden[k])
+#   bias:         out_features float32 (present iff has_bias == 1)
+PROJ_SIDECAR_MAGIC = b"OLPROJ01"
+
+
+def write_projection_sidecar(path: Path, weight: "np.ndarray", bias, out_features: int, in_features: int) -> None:
+    w = np.ascontiguousarray(weight.reshape(out_features, in_features), dtype=np.float32)
+    out = bytearray(PROJ_SIDECAR_MAGIC)
+    out += struct.pack("<III", out_features, in_features, 1 if bias is not None else 0)
+    out += w.tobytes()
+    if bias is not None:
+        out += np.ascontiguousarray(bias.reshape(out_features), dtype=np.float32).tobytes()
+    path.write_bytes(out)
 
 
 def decode_field(field: Any) -> Any:
@@ -177,7 +205,9 @@ def main() -> None:
     # Copy and rename tensors
     mapped_count = 0
     skipped_count = 0
-    
+    proj_weight = None
+    proj_bias = None
+
     for t in reader.tensors:
         if t.name.startswith("hf."):
             # Strip "hf." prefix
@@ -243,12 +273,16 @@ def main() -> None:
                 print(f"Warning: Could not map tensor: {t.name}")
                 skipped_count += 1
         elif t.name.startswith("colbert.proj."):
-            # Drop the ColBERT projection: it is not part of the llama.cpp BERT
-            # graph, and an unknown tensor trips llama.cpp's tensor-count check
-            # ("wrong number of tensors"), preventing the model from loading. The
-            # serving layer applies the projection (the pg_colbert GGUF retains it).
+            # The ColBERT projection is not part of the llama.cpp BERT graph, and
+            # an unknown tensor trips llama.cpp's tensor-count check ("wrong number
+            # of tensors"), preventing the model from loading. So drop it from the
+            # GGUF and emit it as a sidecar the serving layer loads separately.
+            if t.name == "colbert.proj.weight":
+                proj_weight = np.asarray(t.data, dtype=np.float32)
+            elif t.name == "colbert.proj.bias":
+                proj_bias = np.asarray(t.data, dtype=np.float32)
             if args.verbose:
-                print(f"Dropping runtime-only projection tensor: {t.name}")
+                print(f"Captured projection tensor for sidecar: {t.name}")
             skipped_count += 1
         else:
             print(f"Warning: Skipping unmapped custom tensor: {t.name}")
@@ -263,6 +297,26 @@ def main() -> None:
     print(f"\nSuccess! Standard llama.cpp model written to: {outfile_path}")
     print(f"Tensors mapped: {mapped_count}, Tensors skipped/dropped: {skipped_count}")
     print("This file can now be loaded directly in llama.cpp binaries (e.g. llama-embedding).")
+
+    # Emit the projection sidecar (the serving layer applies the 384->128 projection).
+    if args.projection_sidecar:
+        if proj_weight is None:
+            print("Warning: no colbert.proj.weight in input; skipping projection sidecar.", file=sys.stderr)
+        else:
+            out_features = int(decode_field(reader.fields.get("colbert.projection.out_features")) or 0)
+            in_features = int(decode_field(reader.fields.get("colbert.projection.in_features")) or 0)
+            if (out_features <= 0 or in_features <= 0) and proj_weight.ndim == 2:
+                # Fall back to the tensor shape; the projected dim (out) is the smaller one.
+                a, b = proj_weight.shape
+                out_features, in_features = (a, b) if a <= b else (b, a)
+            if out_features <= 0 or in_features <= 0:
+                raise SystemExit("cannot determine projection dimensions; colbert.projection.{out,in}_features missing")
+            if proj_weight.size != out_features * in_features:
+                raise SystemExit(
+                    f"projection size {proj_weight.size} != out*in ({out_features}*{in_features})")
+            sidecar_path = Path(str(outfile_path) + ".colbert_proj")
+            write_projection_sidecar(sidecar_path, proj_weight, proj_bias, out_features, in_features)
+            print(f"Wrote projection sidecar: {sidecar_path} (out={out_features}, in={in_features}, bias={proj_bias is not None})")
 
 
 if __name__ == "__main__":
