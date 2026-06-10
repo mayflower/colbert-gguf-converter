@@ -64,6 +64,15 @@ three layers, in order:
   the key. llama.cpp / ollama derive the embedding capability and the per-token
   (multivector) output mode from this key; without it the exported model loads
   but is not detected as an embedding model.
+- Embeds the ColBERT projection **inside the GGUF** as a sentence-transformers
+  dense module by default: `dense_2.weight` (+ `dense_2.bias`) plus
+  `{arch}.embedding_length_out = out_features`. llama.cpp builds that declare
+  the dense module for BERT/ModernBERT (e.g. ollama) apply it in-graph — per
+  token under pooling none — and `llama_model_n_embd_out()` reports the
+  projected width, so the serving layer needs no sidecar. Stock llama.cpp
+  b9509 does not yet declare `dense_2.*` for these archs and will refuse the
+  file; pass `--no-dense-in-gguf` for a backbone-only export it can load (the
+  `.colbert_proj` sidecar then carries the projection).
 
 ### `tests/test_llama_export_alignment.py` (new)
 - Asserts the b9509 tensor names for BERT and ModernBERT.

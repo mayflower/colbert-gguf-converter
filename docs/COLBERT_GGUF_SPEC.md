@@ -189,16 +189,26 @@ The `pg_colbert.tensor_map_json` key contains a JSON map mapping the canonical r
 ## llama.cpp / ollama Export (`export_to_llama_cpp.py`)
 
 `tools/export_to_llama_cpp.py` converts a `pg_colbert_v1` GGUF into a standard
-embedding GGUF that loads and runs directly in upstream llama.cpp and ollama
-(validated against llama.cpp tag **b9509**). It is a backbone-only artifact: the
-`colbert.proj.*` tensors are dropped from the GGUF, because they are not part of
-the llama.cpp BERT graph and an unknown tensor trips llama.cpp's tensor-count
-check ("wrong number of tensors; expected N, got N-1"), which prevents loading.
+embedding GGUF for llama.cpp / ollama (validated against llama.cpp tag
+**b9509**). The `colbert.proj.*` tensors are renamed, not kept: they are not
+part of the llama.cpp BERT graph under that name, and an unknown tensor trips
+llama.cpp's tensor-count check ("wrong number of tensors"), which prevents
+loading. The projection is emitted through two channels:
 
-The projection instead travels as a **sidecar** next to the GGUF,
-`<outfile>.colbert_proj`, which the serving layer loads and applies (384→128 + the
-model's normalization). Disable with `--no-projection-sidecar`. Format
-(little-endian):
+1. **In-GGUF dense module (default)** — the projection is embedded as the
+   sentence-transformers dense module llama.cpp already understands:
+   `dense_2.weight` (+ `dense_2.bias`) with shape `{n_embd, out_features}` plus
+   the `{arch}.embedding_length_out = out_features` metadata key. llama.cpp
+   builds that declare `dense_2.*` for BERT/ModernBERT (e.g. ollama) apply the
+   projection **in-graph** — per token under `pooling_type=none` — and
+   `llama_model_n_embd_out()` reports the projected width, so the serving
+   layer receives final-width rows and needs no sidecar. Stock llama.cpp b9509
+   does not yet declare the dense module for these archs and refuses such a
+   file; pass `--no-dense-in-gguf` for a backbone-only GGUF it can load.
+
+2. **Sidecar** — `<outfile>.colbert_proj` next to the GGUF, for serving layers
+   that apply the projection on the CPU (and for backbone-only exports).
+   Disable with `--no-projection-sidecar`. Format (little-endian):
 
 | field | type | notes |
 |---|---|---|

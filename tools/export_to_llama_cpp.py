@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
                         help="Write the ColBERT projection sidecar (default: true)")
     parser.add_argument("--no-projection-sidecar", dest="projection_sidecar", action="store_false",
                         help="Do not write the ColBERT projection sidecar")
+    parser.add_argument("--dense-in-gguf", dest="dense_in_gguf", action="store_true", default=True,
+                        help="Embed the projection as dense_2.* tensors in the GGUF (default: true)")
+    parser.add_argument("--no-dense-in-gguf", dest="dense_in_gguf", action="store_false",
+                        help="Backbone-only GGUF that stock llama.cpp can load; projection only via sidecar")
     return parser.parse_args()
 
 
@@ -281,47 +285,75 @@ def main() -> None:
                 print(f"Warning: Could not map tensor: {t.name}")
                 skipped_count += 1
         elif t.name.startswith("colbert.proj."):
-            # The ColBERT projection is not part of the llama.cpp BERT graph, and
-            # an unknown tensor trips llama.cpp's tensor-count check ("wrong number
-            # of tensors"), preventing the model from loading. So drop it from the
-            # GGUF and emit it as a sidecar the serving layer loads separately.
+            # The ColBERT projection is not part of the stock llama.cpp BERT
+            # graph under this name. Capture it here; after the loop it is
+            # re-emitted as the sentence-transformers dense module
+            # (dense_2.* + {arch}.embedding_length_out, applied in-graph by
+            # llama.cpp builds that support dense modules for BERT) and/or as
+            # the .colbert_proj sidecar for serving layers that project on CPU.
             if t.name == "colbert.proj.weight":
                 proj_weight = np.asarray(t.data, dtype=np.float32)
             elif t.name == "colbert.proj.bias":
                 proj_bias = np.asarray(t.data, dtype=np.float32)
             if args.verbose:
-                print(f"Captured projection tensor for sidecar: {t.name}")
+                print(f"Captured projection tensor: {t.name}")
             skipped_count += 1
         else:
             print(f"Warning: Skipping unmapped custom tensor: {t.name}")
             skipped_count += 1
+
+    # Determine the projection dimensions once for both emission paths.
+    out_features = in_features = 0
+    if proj_weight is not None:
+        out_features = int(decode_field(reader.fields.get("colbert.projection.out_features")) or 0)
+        in_features = int(decode_field(reader.fields.get("colbert.projection.in_features")) or 0)
+        if (out_features <= 0 or in_features <= 0) and proj_weight.ndim == 2:
+            # Fall back to the tensor shape; the projected dim (out) is the smaller one.
+            a, b = proj_weight.shape
+            out_features, in_features = (a, b) if a <= b else (b, a)
+        if out_features <= 0 or in_features <= 0:
+            raise SystemExit("cannot determine projection dimensions; colbert.projection.{out,in}_features missing")
+        if proj_weight.size != out_features * in_features:
+            raise SystemExit(
+                f"projection size {proj_weight.size} != out*in ({out_features}*{in_features})")
+
+    # Emit the projection as a sentence-transformers dense module inside the
+    # GGUF: dense_2.weight/.bias plus {arch}.embedding_length_out. llama.cpp
+    # applies it in-graph after pooling (for pooling none: per token), and
+    # llama_model_n_embd_out() reports the projected width.
+    #
+    # Note: stock llama.cpp b9509 does not yet declare dense_2.* for the
+    # bert/modernbert arch, so a file with these tensors needs a build that
+    # does (e.g. ollama's). Use --no-dense-in-gguf for a backbone-only file
+    # plus sidecar that stock llama.cpp can load.
+    if args.dense_in_gguf and proj_weight is not None:
+        writer.add_uint32(f"{arch}.embedding_length_out", out_features)
+        writer.add_tensor("dense_2.weight", proj_weight.reshape(out_features, in_features))
+        mapped_count += 1
+        if proj_bias is not None:
+            writer.add_tensor("dense_2.bias", proj_bias.reshape(out_features))
+            mapped_count += 1
+        print(f"Embedded dense projection: dense_2 ({in_features}->{out_features}, "
+              f"bias={proj_bias is not None}), {arch}.embedding_length_out={out_features}")
 
     # Finalize GGUF
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
-    
+
     print(f"\nSuccess! Standard llama.cpp model written to: {outfile_path}")
     print(f"Tensors mapped: {mapped_count}, Tensors skipped/dropped: {skipped_count}")
-    print("This file can now be loaded directly in llama.cpp binaries (e.g. llama-embedding).")
+    if args.dense_in_gguf and proj_weight is not None:
+        print("The embedded dense_2 projection requires a llama.cpp build with BERT dense-module support (e.g. ollama).")
+    else:
+        print("This file can now be loaded directly in llama.cpp binaries (e.g. llama-embedding).")
 
-    # Emit the projection sidecar (the serving layer applies the 384->128 projection).
+    # Emit the projection sidecar (for serving layers that project on CPU).
     if args.projection_sidecar:
         if proj_weight is None:
             print("Warning: no colbert.proj.weight in input; skipping projection sidecar.", file=sys.stderr)
         else:
-            out_features = int(decode_field(reader.fields.get("colbert.projection.out_features")) or 0)
-            in_features = int(decode_field(reader.fields.get("colbert.projection.in_features")) or 0)
-            if (out_features <= 0 or in_features <= 0) and proj_weight.ndim == 2:
-                # Fall back to the tensor shape; the projected dim (out) is the smaller one.
-                a, b = proj_weight.shape
-                out_features, in_features = (a, b) if a <= b else (b, a)
-            if out_features <= 0 or in_features <= 0:
-                raise SystemExit("cannot determine projection dimensions; colbert.projection.{out,in}_features missing")
-            if proj_weight.size != out_features * in_features:
-                raise SystemExit(
-                    f"projection size {proj_weight.size} != out*in ({out_features}*{in_features})")
             sidecar_path = Path(str(outfile_path) + ".colbert_proj")
             write_projection_sidecar(sidecar_path, proj_weight, proj_bias, out_features, in_features)
             print(f"Wrote projection sidecar: {sidecar_path} (out={out_features}, in={in_features}, bias={proj_bias is not None})")
