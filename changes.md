@@ -60,6 +60,10 @@ three layers, in order:
 - Upcasts all exported tensors to **F32** (BERT LayerNorm in b9509 is F32 and its
   CPU binary ops reject mixed F32/F16). Quantize separately if a smaller file is
   needed.
+- Emits **`{arch}.pooling_type = 0`** (none) when the source GGUF does not carry
+  the key. llama.cpp / ollama derive the embedding capability and the per-token
+  (multivector) output mode from this key; without it the exported model loads
+  but is not detected as an embedding model.
 
 ### `tests/test_llama_export_alignment.py` (new)
 - Asserts the b9509 tensor names for BERT and ModernBERT.

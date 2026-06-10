@@ -173,6 +173,14 @@ def main() -> None:
             if args.verbose:
                 print(f"Skipping metadata key {key} due to unmapped type {type_name}")
 
+    # llama.cpp / ollama derive the embedding capability and the per-token
+    # (multivector) output mode from {arch}.pooling_type. ColBERT serving needs
+    # pooling "none" (0): one embedding row per token, pooled by the scorer.
+    pooling_key = f"{arch}.pooling_type"
+    if reader.fields.get(pooling_key) is None:
+        writer.add_uint32(pooling_key, 0)
+        print(f"Adding {pooling_key} = 0 (none) for per-token embeddings")
+
     # Build a llama.cpp ggml tokenizer from the embedded HF tokenizer.json. The
     # pg_colbert GGUF stores the raw tokenizer (tokenizer.huggingface.json) for its
     # own runtime; llama.cpp / ollama instead need tokenizer.ggml.* arrays.
